@@ -18,7 +18,7 @@ sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 # %%
 
-from src.config import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
+from config import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
 
 # %%
 ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')

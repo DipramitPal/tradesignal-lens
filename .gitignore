@@ -9,6 +9,7 @@ venv/
 
 # Environment variables
 .env
+src/config.py
 
 # VSCode settings
 .vscode/
@@ -18,3 +19,5 @@ venv/
 
 # Data folders
 data/
+
+workspace.code-workspace
