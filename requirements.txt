@@ -20,6 +20,9 @@ praw>=7.7
 anthropic>=0.39.0
 openai>=1.40.0
 
+# Web UI
+flask>=3.0
+
 # Config & environment
 python-dotenv>=1.0
 

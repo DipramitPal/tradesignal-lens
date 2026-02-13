@@ -11,6 +11,7 @@ AI-powered Indian stock market trading bot that combines technical analysis, new
 - **AI-Powered Insights** - LLM analysis (Claude / GPT) that combines all signals into intelligent buy/sell/hold recommendations
 - **Signal Combiner** - Weighted scoring system merging technical (70%) and sentiment (30%) signals with confidence assessment
 - **Market Awareness** - IST timezone, NSE trading hours (9:15 AM - 3:30 PM), holiday calendar, market status checks
+- **Budget Advisor Web UI** - Flask-based dashboard: enter a budget and risk tolerance, get suggestions across single stocks, index funds/ETFs, diversified batches, and stock+ETF hybrid mixes
 - **Scheduler Foundation** - Pre-built scheduling infrastructure for future 24/7 autonomous bot mode
 
 ## Project Structure
@@ -36,6 +37,12 @@ tradesignal-lens/
 │   ├── ai_engine/
 │   │   ├── llm_analyzer.py          # Claude/GPT powered stock analysis
 │   │   └── signal_combiner.py       # Multi-source signal fusion
+│   ├── portfolio/
+│   │   └── budget_advisor.py        # Budget-based portfolio suggestions
+│   ├── web/
+│   │   ├── app.py                   # Flask web application
+│   │   ├── templates/index.html     # Budget advisor UI
+│   │   └── static/                  # CSS & JS assets
 │   └── bot/
 │       ├── orchestrator.py          # Main analysis pipeline
 │       └── scheduler.py             # Autonomous mode scheduler (future)
@@ -100,7 +107,24 @@ python main.py info HDFCBANK.NS
 # Save reports to data/reports/
 python main.py analyze RELIANCE.NS --save
 python main.py watchlist --save
+
+# Launch the budget advisor web UI
+python main.py ui
+python main.py ui --port 8080
 ```
+
+### Budget Advisor Web UI
+
+The web UI lets you enter an investment budget and risk tolerance, then generates four types of suggestions:
+
+| Category | What you get |
+|----------|-------------|
+| **Single Stocks** | Top individual picks ranked by signal strength, with quantity and total cost |
+| **Index Funds** | NSE ETFs (Nifty BeES, Bank BeES, Gold BeES, etc.) with units you can buy |
+| **Batches** | Sector-diversified portfolios — conservative, balanced, and aggressive variants |
+| **Mixes** | Hybrid stock + ETF allocations with configurable split ratios |
+
+Launch with `python main.py ui` then open `http://localhost:5000` in your browser.
 
 ## How It Works
 
@@ -120,7 +144,7 @@ python main.py watchlist --save
 - [ ] Options chain analysis
 - [ ] FII/DII flow tracking
 - [ ] Backtesting engine
-- [ ] Web dashboard
+- [x] Web dashboard (budget advisor UI)
 
 ## Disclaimer
 
