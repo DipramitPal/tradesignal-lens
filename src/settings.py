@@ -18,7 +18,7 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 REPORTS_DIR = DATA_DIR / "reports"
 
-# --- Alpha Vantage (legacy support) ---
+# --- Alpha Vantage (fallback when yfinance is unreliable) ---
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 DEFAULT_OUTPUT_SIZE = os.getenv("DEFAULT_OUTPUT_SIZE", "compact")
 
