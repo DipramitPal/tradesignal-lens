@@ -10,6 +10,7 @@ Usage:
     python main.py news RELIANCE.NS             # News for a stock
     python main.py status                       # Market status
     python main.py info RELIANCE.NS             # Stock info
+    python main.py ui                           # Launch budget advisor web UI
 """
 
 import argparse
@@ -195,6 +196,17 @@ def cmd_info(args):
         print(f"  {key:<18} {value}")
 
 
+def cmd_ui(args):
+    """Launch the budget advisor web UI."""
+    from web.app import create_app
+
+    app = create_app()
+    print(f"\n  TradeSignal Lens — Budget Advisor UI")
+    print(f"  Running at http://localhost:{args.port}")
+    print(f"  Press Ctrl+C to stop\n")
+    app.run(host="0.0.0.0", port=args.port, debug=args.debug)
+
+
 def _print_analysis(result: dict):
     """Pretty-print stock analysis results."""
     print(f"\n{'='*60}")
@@ -273,6 +285,8 @@ Examples:
   python main.py news TCS.NS --limit 20
   python main.py status
   python main.py info HDFCBANK.NS
+  python main.py ui                              # launch web UI
+  python main.py ui --port 8080                  # custom port
         """,
     )
 
@@ -310,6 +324,11 @@ Examples:
     p_info = subparsers.add_parser("info", help="Show stock info")
     p_info.add_argument("symbol", help="Stock symbol")
 
+    # ui
+    p_ui = subparsers.add_parser("ui", help="Launch budget advisor web UI")
+    p_ui.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
+    p_ui.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -324,6 +343,7 @@ Examples:
         "news": cmd_news,
         "status": cmd_status,
         "info": cmd_info,
+        "ui": cmd_ui,
     }
 
     commands[args.command](args)

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeSignal Lens — Budget Advisor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+
+<!-- ───────── Header ───────── -->
+<header>
+  <div class="header-inner">
+    <h1>TradeSignal Lens</h1>
+    <span class="subtitle">AI-Powered Budget Advisor for Indian Markets</span>
+    <div id="market-status" class="market-badge"></div>
+  </div>
+</header>
+
+<!-- ───────── Budget Form ───────── -->
+<main>
+  <section class="budget-form card">
+    <h2>Investment Budget</h2>
+    <p class="muted">Enter your budget and risk appetite to get personalised suggestions across stocks, ETFs, diversified batches, and hybrid mixes.</p>
+
+    <div class="form-row">
+      <div class="field">
+        <label for="budget">Budget (INR)</label>
+        <div class="input-group">
+          <span class="prefix">&#8377;</span>
+          <input id="budget" type="number" min="500" step="100" placeholder="50000" value="50000">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="risk">Risk Profile</label>
+        <select id="risk">
+          <option value="conservative">Conservative</option>
+          <option value="balanced" selected>Balanced</option>
+          <option value="aggressive">Aggressive</option>
+        </select>
+      </div>
+
+      <button id="btn-suggest" onclick="getSuggestions()">Get Suggestions</button>
+    </div>
+  </section>
+
+  <!-- ───────── Loading ───────── -->
+  <div id="loader" class="loader hidden">
+    <div class="spinner"></div>
+    <p>Scanning stocks &amp; building portfolios&hellip;</p>
+  </div>
+
+  <!-- ───────── Error ───────── -->
+  <div id="error-box" class="error-box hidden"></div>
+
+  <!-- ───────── Results ───────── -->
+  <section id="results" class="hidden">
+
+    <!-- Tabs -->
+    <div class="tabs" role="tablist">
+      <button class="tab active" data-tab="single"   onclick="switchTab('single')">Single Stocks</button>
+      <button class="tab"        data-tab="index"    onclick="switchTab('index')">Index Funds</button>
+      <button class="tab"        data-tab="batches"  onclick="switchTab('batches')">Batches</button>
+      <button class="tab"        data-tab="mixes"    onclick="switchTab('mixes')">Mixes</button>
+    </div>
+
+    <!-- Tab Panels -->
+    <div id="panel-single"  class="tab-panel active"></div>
+    <div id="panel-index"   class="tab-panel hidden"></div>
+    <div id="panel-batches" class="tab-panel hidden"></div>
+    <div id="panel-mixes"   class="tab-panel hidden"></div>
+  </section>
+
+  <!-- ───────── Disclaimer ───────── -->
+  <section id="disclaimer" class="disclaimer hidden">
+    <strong>Disclaimer:</strong> This is AI-generated analysis for educational and research purposes only.
+    It does <em>not</em> constitute financial advice. Always consult a SEBI-registered investment advisor
+    before making trading decisions.
+  </section>
+</main>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
