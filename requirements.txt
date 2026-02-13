@@ -1,0 +1,30 @@
+# Core data & analysis
+pandas>=2.0
+numpy>=1.24
+yfinance>=0.2.31
+
+# Technical analysis (existing dependency)
+alpha_vantage>=2.3.1
+
+# News fetching
+feedparser>=6.0
+requests>=2.31
+
+# Sentiment analysis
+vaderSentiment>=3.3.2
+
+# Social media
+praw>=7.7
+
+# AI / LLM
+anthropic>=0.39.0
+openai>=1.40.0
+
+# Config & environment
+python-dotenv>=1.0
+
+# Timezone handling
+pytz>=2024.1
+
+# Scheduling (for future autonomous mode)
+schedule>=1.2.0
