@@ -3,21 +3,28 @@ __pycache__/
 *.pyc
 *.pyo
 *.pyd
+*.egg-info/
 
 # Virtual environment
 venv/
+.venv/
 
-# Environment variables
+# Environment variables & secrets
 .env
 src/config.py
 
-# VSCode settings
+# VSCode / IDE settings
 .vscode/
+.idea/
 
 # Jupyter notebook checkpoints
 .ipynb_checkpoints/
 
-# Data folders
+# Data folders (generated at runtime)
 data/
+
+# OS files
+.DS_Store
+Thumbs.db
 
 workspace.code-workspace
