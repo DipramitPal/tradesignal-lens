@@ -18,11 +18,10 @@ sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
 
 # %%
 
-from config import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
+from settings import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
 
 # %%
 ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
-
 # %%
 def fetch_daily_stock_data(symbol: str, output_size=DEFAULT_OUTPUT_SIZE) -> pd.DataFrame:
     try:
@@ -40,7 +39,21 @@ def fetch_daily_stock_data(symbol: str, output_size=DEFAULT_OUTPUT_SIZE) -> pd.D
 def save_to_csv(df: pd.DataFrame, symbol: str):
     os.makedirs(RAW_DATA_DIR, exist_ok=True)
     filename = os.path.join(RAW_DATA_DIR, f"{symbol.replace('.', '_')}.csv").replace("\\", "/")
-    df.to_csv(filename)
+    if os.path.exists(filename):
+        print(f"File {filename} already exists. Updating with new data...")
+        existing_df = pd.read_csv(filename, index_col='Date',parse_dates=True)
+        print(f"Latest date available in file: {existing_df.index.max().strftime('%Y-%m-%d')}")
+  
+        new_dates = set(df.index.strftime('%Y-%m-%d')) - set(existing_df.index.strftime('%Y-%m-%d'))
+        data_to_add = pd.DataFrame()
+        if new_dates:
+            print(f"New dates added for {symbol}: {sorted(new_dates)}")
+            data_to_add = df[df.index.strftime('%Y-%m-%d').isin(new_dates)]
+        
+        combined_df = pd.concat([existing_df, data_to_add]).sort_index(ascending=False)
+        combined_df.to_csv(filename)
+    else:
+        df.to_csv(filename)
 
 def fetch_multiple_stocks(symbols: list[str]):
     for symbol in symbols:
