@@ -14,34 +14,34 @@ from math import floor
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from settings import STOCK_SYMBOLS
 
-# Popular Indian ETFs available on NSE (via yfinance)
+# Popular Indian ETFs available on BSE (via Alpha Vantage)
 INDEX_FUNDS = [
     {
-        "symbol": "NIFTYBEES.NS",
+        "symbol": "NIFTYBEES.BSE",
         "name": "Nippon India Nifty 50 BeES",
         "type": "Nifty 50 ETF",
         "description": "Tracks Nifty 50 index — broad large-cap exposure",
     },
     {
-        "symbol": "JUNIORBEES.NS",
+        "symbol": "JUNIORBEES.BSE",
         "name": "Nippon India Junior BeES",
         "type": "Nifty Next 50 ETF",
         "description": "Tracks Nifty Next 50 — large-to-mid cap growth",
     },
     {
-        "symbol": "BANKBEES.NS",
+        "symbol": "BANKBEES.BSE",
         "name": "Nippon India Bank BeES",
         "type": "Bank Nifty ETF",
         "description": "Tracks Bank Nifty — concentrated banking sector",
     },
     {
-        "symbol": "GOLDBEES.NS",
+        "symbol": "GOLDBEES.BSE",
         "name": "Nippon India Gold BeES",
         "type": "Gold ETF",
         "description": "Tracks domestic gold prices — hedge against equity volatility",
     },
     {
-        "symbol": "SETFNIF50.NS",
+        "symbol": "SETFNIF50.BSE",
         "name": "SBI ETF Nifty 50",
         "type": "Nifty 50 ETF",
         "description": "SBI's Nifty 50 tracker — alternative broad market ETF",
@@ -51,14 +51,14 @@ INDEX_FUNDS = [
 # Sector classification for diversification
 SECTOR_GROUPS = {
     "Financial Services": [
-        "HDFCBANK.NS", "ICICIBANK.NS", "SBIN.NS", "KOTAKBANK.NS", "AXISBANK.NS",
+        "HDFCBANK.BSE", "ICICIBANK.BSE", "SBIN.BSE", "KOTAKBANK.BSE", "AXISBANK.BSE",
     ],
-    "IT": ["TCS.NS", "INFY.NS", "WIPRO.NS"],
-    "Energy & Commodities": ["RELIANCE.NS", "TATASTEEL.NS", "ADANIENT.NS"],
-    "FMCG & Consumer": ["HINDUNILVR.NS", "ITC.NS", "TITAN.NS", "ASIANPAINT.NS"],
-    "Auto & Industrial": ["MARUTI.NS", "TATAMOTORS.NS", "LT.NS"],
-    "Pharma & Healthcare": ["SUNPHARMA.NS"],
-    "Telecom": ["BHARTIARTL.NS"],
+    "IT": ["TCS.BSE", "INFY.BSE", "WIPRO.BSE"],
+    "Energy & Commodities": ["RELIANCE.BSE", "TATASTEEL.BSE", "ADANIENT.BSE"],
+    "FMCG & Consumer": ["HINDUNILVR.BSE", "ITC.BSE", "TITAN.BSE", "ASIANPAINT.BSE"],
+    "Auto & Industrial": ["MARUTI.BSE", "TATAMOTORS.BSE", "LT.BSE"],
+    "Pharma & Healthcare": ["SUNPHARMA.BSE"],
+    "Telecom": ["BHARTIARTL.BSE"],
 }
 
 

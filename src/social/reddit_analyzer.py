@@ -131,14 +131,14 @@ class RedditAnalyzer:
         Get sentiment for a specific stock from Reddit discussions.
 
         Args:
-            symbol: Stock symbol (e.g. "RELIANCE" or "RELIANCE.NS")
+            symbol: Stock symbol (e.g. "RELIANCE" or "RELIANCE.BSE")
             subreddits: Subreddits to search
             limit: Number of posts to analyze
 
         Returns:
             dict with sentiment scores and relevant posts
         """
-        clean_symbol = symbol.replace(".NS", "").replace(".BO", "")
+        clean_symbol = symbol.replace(".BSE", "").replace(".NS", "").replace(".BO", "")
 
         if not self.reddit:
             return {

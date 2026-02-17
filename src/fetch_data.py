@@ -17,11 +17,20 @@ from alpha_vantage.timeseries import TimeSeries
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from settings import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
 
-ts = TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+
+def _get_timeseries():
+    """Lazily create TimeSeries client, with a friendly error if no API key."""
+    if not ALPHA_VANTAGE_API_KEY:
+        print("Error: ALPHA_VANTAGE_API_KEY is not set.")
+        print("Get a free key from https://www.alphavantage.co/support/#api-key")
+        print("Then add it to your .env file: ALPHA_VANTAGE_API_KEY=your_key_here")
+        sys.exit(1)
+    return TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
 
 
 def fetch_daily_stock_data(symbol: str, output_size=DEFAULT_OUTPUT_SIZE) -> pd.DataFrame:
     try:
+        ts = _get_timeseries()
         print(f"Fetching daily data for {symbol} with output size {output_size}...")
         data = ts.get_daily(symbol=symbol, outputsize=output_size)[0]
         data = data.rename(columns=lambda x: x.split('. ')[1])

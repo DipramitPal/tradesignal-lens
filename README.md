@@ -4,7 +4,7 @@ AI-powered Indian stock market trading bot that combines technical analysis, new
 
 ## Features
 
-- **Indian Market Data** - Real-time and historical data for NSE/BSE stocks via yfinance (Nifty 50 blue chips + custom watchlists)
+- **Indian Market Data** - Real-time and historical data for BSE stocks via Alpha Vantage (blue chips + custom watchlists)
 - **Technical Analysis** - RSI, MACD, Bollinger Bands, EMA, momentum, volatility indicators with signal generation
 - **News Sentiment** - Financial news analysis from Google News RSS and NewsAPI with VADER-based sentiment scoring, boosted for financial terminology
 - **Social Media Trends** - Reddit sentiment from Indian stock subreddits (r/IndianStockMarket, r/IndianStreetBets, etc.) with ticker extraction
@@ -23,11 +23,11 @@ tradesignal-lens/
 ├── .env.example                     # Environment config template
 ├── src/
 │   ├── settings.py                  # Centralized config from .env
-│   ├── fetch_data.py                # Alpha Vantage fetcher (legacy)
+│   ├── fetch_data.py                # Alpha Vantage data fetcher
 │   ├── feature_engineering.py       # Technical indicators
 │   ├── signal_generator.py          # Rule-based signal generation
 │   ├── market_data/
-│   │   ├── indian_market.py         # NSE/BSE data via yfinance
+│   │   ├── indian_market.py         # BSE data via Alpha Vantage
 │   │   └── market_utils.py          # Market hours, holidays, IST utils
 │   ├── news/
 │   │   ├── news_fetcher.py          # Google News RSS + NewsAPI
@@ -72,22 +72,27 @@ cp .env.example .env
 
 | Service | Required? | Get it from |
 |---------|-----------|-------------|
+| Alpha Vantage | **Required** | [alphavantage.co](https://www.alphavantage.co/support/#api-key) (free tier: 25 req/day) |
 | Anthropic (Claude) | Recommended | [console.anthropic.com](https://console.anthropic.com) |
 | OpenAI (GPT) | Alternative | [platform.openai.com](https://platform.openai.com) |
 | NewsAPI | Optional | [newsapi.org](https://newsapi.org) |
 | Reddit | Optional | [reddit.com/prefs/apps](https://www.reddit.com/prefs/apps) |
 
-The bot works without any API keys (using Google News RSS + rule-based analysis) but LLM integration provides significantly richer insights.
+The bot requires an Alpha Vantage API key for stock data. Without LLM keys it falls back to rule-based analysis. News uses Google News RSS by default (no key needed).
 
 ## Usage
 
 ```bash
+# Download stock data
+python main.py fetch                             # all watchlist stocks
+python main.py fetch --symbol RELIANCE.BSE       # single stock
+
 # Analyze a single stock
-python main.py analyze RELIANCE.NS
+python main.py analyze RELIANCE.BSE
 
 # Scan your watchlist
 python main.py watchlist
-python main.py watchlist --symbols "TCS.NS,INFY.NS,SBIN.NS"
+python main.py watchlist --symbols "TCS.BSE,INFY.BSE,SBIN.BSE"
 
 # Daily market brief
 python main.py brief
@@ -96,16 +101,16 @@ python main.py brief
 python main.py status
 
 # News analysis for a stock
-python main.py news RELIANCE.NS
+python main.py news RELIANCE.BSE
 
 # Trending tickers on social media
 python main.py trending
 
 # Stock info
-python main.py info HDFCBANK.NS
+python main.py info HDFCBANK.BSE
 
 # Save reports to data/reports/
-python main.py analyze RELIANCE.NS --save
+python main.py analyze RELIANCE.BSE --save
 python main.py watchlist --save
 
 # Launch the budget advisor web UI
@@ -128,7 +133,7 @@ Launch with `python main.py ui` then open `http://localhost:5000` in your browse
 
 ## How It Works
 
-1. **Data Collection** - Fetches OHLCV data from yfinance, news from multiple sources, social media posts from Reddit
+1. **Data Collection** - Fetches OHLCV data from Alpha Vantage, news from multiple sources, social media posts from Reddit
 2. **Technical Analysis** - Computes 10+ technical indicators and generates rule-based buy/sell signals
 3. **Sentiment Analysis** - VADER sentiment scoring enhanced with financial domain vocabulary
 4. **Signal Fusion** - Weighted combination of technical (70%) and sentiment (30%) scores with confidence assessment

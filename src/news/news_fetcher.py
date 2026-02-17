@@ -6,6 +6,7 @@ Supports NewsAPI and Google News RSS as sources.
 import os
 import sys
 from datetime import datetime, timedelta
+from urllib.parse import quote
 
 import feedparser
 import requests
@@ -43,15 +44,15 @@ class NewsFetcher:
         Fetch news for a specific stock from available sources.
 
         Args:
-            symbol: Stock symbol (e.g. "RELIANCE.NS")
+            symbol: Stock symbol (e.g. "RELIANCE.BSE")
             company_name: Full company name for better search
             max_results: Maximum number of articles to return
 
         Returns:
             List of dicts with keys: title, description, source, url, published
         """
-        # Clean symbol for search (remove .NS/.BO suffix)
-        clean_symbol = symbol.replace(".NS", "").replace(".BO", "")
+        # Clean symbol for search (remove exchange suffix)
+        clean_symbol = symbol.replace(".BSE", "").replace(".NS", "").replace(".BO", "")
         search_term = company_name or clean_symbol
 
         articles = []
@@ -110,7 +111,7 @@ class NewsFetcher:
     ) -> list[dict]:
         """Fetch from Google News RSS feed."""
         try:
-            url = f"{self.GOOGLE_NEWS_RSS}?q={query}&hl=en-IN&gl=IN&ceid=IN:en"
+            url = f"{self.GOOGLE_NEWS_RSS}?q={quote(query)}&hl=en-IN&gl=IN&ceid=IN:en"
             feed = feedparser.parse(url)
 
             articles = []
