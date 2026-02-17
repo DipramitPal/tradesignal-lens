@@ -3,13 +3,14 @@
 TradeSignal Lens - AI-Powered Indian Stock Market Trading Bot
 
 Usage:
-    python main.py analyze RELIANCE.NS         # Analyze a single stock
+    python main.py fetch                        # Download data via Alpha Vantage
+    python main.py analyze RELIANCE.BSE         # Analyze a single stock
     python main.py watchlist                    # Scan full watchlist
     python main.py brief                        # Daily market brief
     python main.py trending                     # Trending tickers on social media
-    python main.py news RELIANCE.NS             # News for a stock
+    python main.py news RELIANCE.BSE            # News for a stock
     python main.py status                       # Market status
-    python main.py info RELIANCE.NS             # Stock info
+    python main.py info RELIANCE.BSE            # Stock info
     python main.py ui                           # Launch budget advisor web UI
 """
 
@@ -22,6 +23,27 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
 from settings import STOCK_SYMBOLS
+
+
+def cmd_fetch(args):
+    """Fetch stock data from Alpha Vantage and save to CSV."""
+    from fetch_data import fetch_multiple_stocks, fetch_daily_stock_data, save_to_csv
+
+    symbols = args.symbols.split(",") if args.symbols else STOCK_SYMBOLS
+
+    if args.symbol:
+        # Fetch a single symbol
+        print(f"Fetching {args.symbol}...")
+        df = fetch_daily_stock_data(args.symbol, output_size=args.output_size)
+        if not df.empty:
+            save_to_csv(df, args.symbol)
+    else:
+        # Fetch all configured symbols
+        print(f"Fetching {len(symbols)} stocks from Alpha Vantage...")
+        print("(15s delay between requests to respect rate limits)\n")
+        fetch_multiple_stocks(symbols)
+
+    print("\nDone. CSVs saved to data/raw/")
 
 
 def cmd_analyze(args):
@@ -279,12 +301,14 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  python main.py analyze RELIANCE.NS
-  python main.py watchlist --symbols "RELIANCE.NS,TCS.NS,INFY.NS"
+  python main.py fetch                           # download data for all stocks
+  python main.py fetch --symbol RELIANCE.BSE     # download one stock
+  python main.py analyze RELIANCE.BSE            # analyze a stock
+  python main.py watchlist --symbols "RELIANCE.BSE,TCS.BSE,INFY.BSE"
   python main.py brief
-  python main.py news TCS.NS --limit 20
+  python main.py news TCS.BSE --limit 20
   python main.py status
-  python main.py info HDFCBANK.NS
+  python main.py info HDFCBANK.BSE
   python main.py ui                              # launch web UI
   python main.py ui --port 8080                  # custom port
         """,
@@ -292,9 +316,16 @@ Examples:
 
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
+    # fetch
+    p_fetch = subparsers.add_parser("fetch", help="Download stock data from Alpha Vantage")
+    p_fetch.add_argument("--symbol", help="Single symbol to fetch (e.g. RELIANCE.BSE)")
+    p_fetch.add_argument("--symbols", help="Comma-separated symbols (overrides default)")
+    p_fetch.add_argument("--output-size", default="compact", choices=["compact", "full"],
+                         help="compact=100 days, full=20+ years (default: compact)")
+
     # analyze
     p_analyze = subparsers.add_parser("analyze", help="Analyze a single stock")
-    p_analyze.add_argument("symbol", help="Stock symbol (e.g. RELIANCE.NS)")
+    p_analyze.add_argument("symbol", help="Stock symbol (e.g. RELIANCE.BSE)")
     p_analyze.add_argument("--period", default="6mo", help="Data period (default: 6mo)")
     p_analyze.add_argument("--save", action="store_true", help="Save report to file")
 
@@ -336,6 +367,7 @@ Examples:
         return
 
     commands = {
+        "fetch": cmd_fetch,
         "analyze": cmd_analyze,
         "watchlist": cmd_watchlist,
         "brief": cmd_brief,

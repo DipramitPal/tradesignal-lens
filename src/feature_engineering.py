@@ -6,8 +6,8 @@ import numpy as np
 from typing import List, Dict
 import sys
 import os
-sys.path.append(os.path.abspath(os.path.join(os.getcwd(), '..')))
-from config import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from settings import RAW_DATA_DIR, PROCESSED_DATA_DIR
 
 
 
@@ -63,7 +63,7 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 def process_all_stocks():
     raw_dir = RAW_DATA_DIR
-    processed_dir = raw_dir.replace("raw", "processed")
+    processed_dir = PROCESSED_DATA_DIR
     os.makedirs(processed_dir, exist_ok=True)
 
     for filename in os.listdir(raw_dir):
