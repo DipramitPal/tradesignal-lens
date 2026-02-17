@@ -18,23 +18,19 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 REPORTS_DIR = DATA_DIR / "reports"
 
-# --- Alpha Vantage (fallback when yfinance is unreliable) ---
+# --- Alpha Vantage (primary data source) ---
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
 DEFAULT_OUTPUT_SIZE = os.getenv("DEFAULT_OUTPUT_SIZE", "compact")
 
 # --- Indian Market Defaults ---
-# Default NSE watchlist (Nifty 50 blue chips + popular mid-caps)
+# Default BSE watchlist (blue chips + popular mid-caps)
+# Use .BSE suffix for Alpha Vantage BSE symbols
 DEFAULT_WATCHLIST = [
-    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
-    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
-    "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "TITAN.NS",
-    "SUNPHARMA.NS", "WIPRO.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "ADANIENT.NS",
+    "RELIANCE.BSE", "TCS.BSE", "HDFCBANK.BSE", "INFY.BSE", "ICICIBANK.BSE",
+    "HINDUNILVR.BSE", "ITC.BSE", "SBIN.BSE", "BHARTIARTL.BSE", "KOTAKBANK.BSE",
+    "LT.BSE", "AXISBANK.BSE", "ASIANPAINT.BSE", "MARUTI.BSE", "TITAN.BSE",
+    "SUNPHARMA.BSE", "WIPRO.BSE", "TATAMOTORS.BSE", "TATASTEEL.BSE", "ADANIENT.BSE",
 ]
-
-# Index symbols
-NIFTY_50 = "^NSEI"
-SENSEX = "^BSESN"
-NIFTY_BANK = "^NSEBANK"
 
 # Market hours (IST)
 MARKET_OPEN_HOUR = 9
