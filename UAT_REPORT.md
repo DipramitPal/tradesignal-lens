@@ -229,26 +229,100 @@ Output:
 
 ---
 
-## 4. Bugs Found
+## 4. Multi-Stock Data Report
 
-### Bug 1: Google News URL Encoding (Medium)
+Data fetched for 7 blue-chip BSE stocks (100 trading days each, Sep 2025 – Feb 2026).
+
+### 4.1 Stock Price Summary
+
+| Stock | Price (INR) | Period Return | 52w High | 52w Low | Off High | Avg Volume |
+|-------|------------|---------------|----------|---------|----------|------------|
+| SBIN.BSE | 1,207.90 | **+40.09%** | 1,207.90 | 855.05 | 0.00% | 796,285 |
+| ICICIBANK.BSE | 1,410.20 | +4.69% | 1,436.70 | 1,320.40 | -1.84% | 645,200 |
+| RELIANCE.BSE | 1,436.40 | +3.31% | 1,592.45 | 1,363.45 | -9.80% | 690,108 |
+| HDFCBANK.BSE | 925.45 | -4.30% | 1,009.25 | 905.65 | -8.30% | 1,201,842 |
+| INFY.BSE | 1,366.25 | -5.14% | 1,689.70 | 1,366.25 | -19.14% | 461,241 |
+| TCS.BSE | 2,708.20 | -6.50% | 3,324.65 | 2,692.15 | -18.54% | 221,772 |
+| ITC.BSE | 317.95 | **-21.90%** | 421.60 | 309.60 | -24.58% | 1,911,932 |
+
+### 4.2 Technical Indicators
+
+| Stock | RSI | MACD | 5d Momentum | Signal | Interpretation |
+|-------|-----|------|-------------|--------|----------------|
+| SBIN.BSE | **78.61** | +48.08 | +61.95 | Strong Buy | Overbought — at 52w high, strong uptrend but caution warranted |
+| ICICIBANK.BSE | 62.03 | +9.98 | +13.05 | Hold | Healthy uptrend, near highs, positive momentum |
+| RELIANCE.BSE | 63.40 | -9.26 | -25.00 | Hold | Neutral RSI but negative MACD, recent pullback |
+| HDFCBANK.BSE | 49.37 | -9.10 | -11.80 | Sell | Neutral RSI, negative MACD, downward momentum |
+| ITC.BSE | 47.46 | -9.41 | -4.60 | Hold | Neutral, in a long-term downtrend (-22%), stabilizing |
+| TCS.BSE | **23.46** | -113.33 | -238.90 | Sell | Deeply oversold — sharp sell-off, potential bounce candidate |
+| INFY.BSE | **7.41** | -62.04 | -130.80 | Sell | Extremely oversold — at 52w low, heavy selling pressure |
+
+### 4.3 Watchlist Scan Results (Signal Combiner)
+
+Full pipeline analysis combining technical indicators + sentiment (neutral, no APIs configured):
+
+| Rank | Stock | Recommendation | Confidence | Combined Score | Price (INR) |
+|------|-------|---------------|------------|----------------|-------------|
+| 1 | ICICIBANK.BSE | HOLD | LOW | +0.098 | 1,410.20 |
+| 2 | ITC.BSE | HOLD | LOW | +0.070 | 317.95 |
+| 3 | TCS.BSE | HOLD | LOW | +0.023 | 2,708.20 |
+| 4 | INFY.BSE | HOLD | LOW | +0.023 | 1,366.25 |
+| 5 | RELIANCE.BSE | HOLD | LOW | +0.014 | 1,436.40 |
+| 6 | SBIN.BSE | HOLD | LOW | -0.023 | 1,207.90 |
+| 7 | HDFCBANK.BSE | SELL | LOW | -0.154 | 925.45 |
+
+### 4.4 Market Observations
+
+- **Best performer:** SBIN (+40%) — at 52w high with RSI 78.6 (overbought)
+- **Worst performer:** ITC (-22%) — deep correction from 421 to 318 over 5 months
+- **Oversold candidates:** INFY (RSI 7.4) and TCS (RSI 23.5) — IT sector under significant pressure, potential mean-reversion opportunity
+- **Near highs:** ICICIBANK is just 1.8% off its 52w high with positive MACD — strongest technical profile
+- **Volume spikes:** HDFCBANK (5.2M vs 1.2M avg) and SBIN (2.1M vs 796K avg) saw elevated volume on Feb 16, suggesting institutional activity
+- **Sector trends:** Banking (SBIN, ICICIBANK) outperforming; IT (TCS, INFY) underperforming significantly
+
+### 4.5 Portfolio Advisor Output (Rs. 50,000 budget, moderate risk)
+
+The web UI `/api/suggest` endpoint was tested and returned:
+
+**Single Stocks:**
+- RELIANCE.BSE: 34 shares @ Rs. 1,436.40 = Rs. 48,837.60 (remaining: Rs. 1,162.40)
+
+**Mixed Portfolios:**
+- 50/50 Split: 17 shares RELIANCE @ Rs. 24,418.80 + index ETFs
+- 70/30 Split: 24 shares RELIANCE @ Rs. 34,473.60 + index ETFs
+
+*Note: With more stock data cached, the portfolio advisor will generate diversified multi-sector batches across all 7 stocks.*
+
+---
+
+## 5. Bugs Found & Fixed
+
+### Bug 1: Google News URL Encoding (Medium) — FIXED
 - **Location:** `src/news/news_fetcher.py` (Google News RSS URL construction)
 - **Issue:** Spaces in search queries not URL-encoded
 - **Impact:** Daily brief cannot fetch any news headlines
 - **Fix:** URL-encode the query parameter using `urllib.parse.quote()`
 
-### Bug 2: Missing API Key Crash (Low)
+### Bug 2: Missing API Key Crash (Low) — FIXED
 - **Location:** `src/fetch_data.py:20`
 - **Issue:** `alpha_vantage.TimeSeries()` raises `ValueError` when key is empty string
 - **Impact:** Unhandled traceback shown to user instead of friendly message
-- **Fix:** Check for empty key before instantiation, print helpful error
+- **Fix:** Lazy initialization with friendly error message and `sys.exit(1)`
+
+### Bug 3: Incomplete .NS → .BSE Symbol Migration (Medium) — FIXED
+- **Location:** `src/news/news_fetcher.py`, `src/social/reddit_analyzer.py`, `src/portfolio/budget_advisor.py`
+- **Issue:** Codebase migrated to Alpha Vantage (`.BSE` symbols) but several modules still referenced `.NS`
+- **Impact:** News/social search queries included `.BSE` suffix; portfolio advisor ETFs/sectors pointed at wrong symbols
+- **Fix:** Added `.BSE` to suffix stripping; updated all ETF and sector group symbols to `.BSE`
 
 ---
 
-## 5. Observations
+## 6. Observations
 
-- **Data quality:** Real-time BSE stock data is accurate and consistent
+- **Data quality:** Real-time BSE stock data is accurate and consistent across all 7 stocks
+- **Multi-stock support:** Watchlist scan successfully analyzes and ranks multiple stocks in a single run
 - **Graceful degradation:** The app handles missing optional APIs (Reddit, LLM, News) well — falls back to rule-based analysis without crashing
-- **Rate limiting:** Alpha Vantage free tier (25 req/day) is a practical constraint for watchlist scans of 20 stocks; the app handles rate limit errors per-stock
+- **Rate limiting:** Alpha Vantage free tier (25 req/day) is a practical constraint for the full 20-stock watchlist; once data is cached locally, analysis runs instantly from CSV
 - **Portfolio advisor:** Budget allocation math is correct and produces sensible suggestions
+- **Technical accuracy:** RSI, MACD, and momentum values are consistent with observed price action (e.g., INFY RSI 7.4 at 52w low, SBIN RSI 78.6 at 52w high)
 - **Code structure:** Clean separation of concerns across modules (fetch, analysis, news, social, AI, web)
