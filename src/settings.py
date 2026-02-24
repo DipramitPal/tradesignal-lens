@@ -18,18 +18,14 @@ RAW_DATA_DIR = DATA_DIR / "raw"
 PROCESSED_DATA_DIR = DATA_DIR / "processed"
 REPORTS_DIR = DATA_DIR / "reports"
 
-# --- Alpha Vantage (primary data source) ---
-ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY", "")
-DEFAULT_OUTPUT_SIZE = os.getenv("DEFAULT_OUTPUT_SIZE", "compact")
-
 # --- Indian Market Defaults ---
-# Default BSE watchlist (blue chips + popular mid-caps)
-# Use .BSE suffix for Alpha Vantage BSE symbols
+# Default NSE watchlist (blue chips + popular mid-caps)
+# yfinance uses .NS suffix for NSE and .BO suffix for BSE
 DEFAULT_WATCHLIST = [
-    "RELIANCE.BSE", "TCS.BSE", "HDFCBANK.BSE", "INFY.BSE", "ICICIBANK.BSE",
-    "HINDUNILVR.BSE", "ITC.BSE", "SBIN.BSE", "BHARTIARTL.BSE", "KOTAKBANK.BSE",
-    "LT.BSE", "AXISBANK.BSE", "ASIANPAINT.BSE", "MARUTI.BSE", "TITAN.BSE",
-    "SUNPHARMA.BSE", "WIPRO.BSE", "TATAMOTORS.BSE", "TATASTEEL.BSE", "ADANIENT.BSE",
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "HINDUNILVR.NS", "ITC.NS", "SBIN.NS", "BHARTIARTL.NS", "KOTAKBANK.NS",
+    "LT.NS", "AXISBANK.NS", "ASIANPAINT.NS", "MARUTI.NS", "TITAN.NS",
+    "SUNPHARMA.NS", "WIPRO.NS", "TATAMOTORS.NS", "TATASTEEL.NS", "ADANIENT.NS",
 ]
 
 # Market hours (IST)
@@ -73,3 +69,11 @@ MAX_RSI_BUY = float(os.getenv("MAX_RSI_BUY", "35"))
 MIN_RSI_SELL = float(os.getenv("MIN_RSI_SELL", "65"))
 SENTIMENT_WEIGHT = float(os.getenv("SENTIMENT_WEIGHT", "0.3"))
 TECHNICAL_WEIGHT = float(os.getenv("TECHNICAL_WEIGHT", "0.7"))
+
+# --- Live Monitoring ---
+MONITOR_INTERVAL_MINUTES = int(os.getenv("MONITOR_INTERVAL_MINUTES", "15"))
+MONITOR_SYMBOLS = os.getenv("MONITOR_SYMBOLS", "")
+if MONITOR_SYMBOLS:
+    MONITOR_SYMBOLS = [s.strip() for s in MONITOR_SYMBOLS.split(",")]
+else:
+    MONITOR_SYMBOLS = STOCK_SYMBOLS

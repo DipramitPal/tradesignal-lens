@@ -3,14 +3,15 @@
 TradeSignal Lens - AI-Powered Indian Stock Market Trading Bot
 
 Usage:
-    python main.py fetch                        # Download data via Alpha Vantage
-    python main.py analyze RELIANCE.BSE         # Analyze a single stock
+    python main.py fetch                        # Download data via yfinance
+    python main.py analyze RELIANCE.NS          # Analyze a single stock
     python main.py watchlist                    # Scan full watchlist
+    python main.py monitor                      # Live monitoring with buy/sell/SL advice
     python main.py brief                        # Daily market brief
     python main.py trending                     # Trending tickers on social media
-    python main.py news RELIANCE.BSE            # News for a stock
+    python main.py news RELIANCE.NS             # News for a stock
     python main.py status                       # Market status
-    python main.py info RELIANCE.BSE            # Stock info
+    python main.py info RELIANCE.NS             # Stock info
     python main.py ui                           # Launch budget advisor web UI
 """
 
@@ -22,11 +23,11 @@ import os
 # Ensure src/ is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from settings import STOCK_SYMBOLS
+from settings import STOCK_SYMBOLS, MONITOR_SYMBOLS, MONITOR_INTERVAL_MINUTES
 
 
 def cmd_fetch(args):
-    """Fetch stock data from Alpha Vantage and save to CSV."""
+    """Fetch stock data from yfinance and save to CSV."""
     from fetch_data import fetch_multiple_stocks, fetch_daily_stock_data, save_to_csv
 
     symbols = args.symbols.split(",") if args.symbols else STOCK_SYMBOLS
@@ -34,14 +35,14 @@ def cmd_fetch(args):
     if args.symbol:
         # Fetch a single symbol
         print(f"Fetching {args.symbol}...")
-        df = fetch_daily_stock_data(args.symbol, output_size=args.output_size)
+        df = fetch_daily_stock_data(args.symbol, period=args.period)
         if not df.empty:
             save_to_csv(df, args.symbol)
     else:
         # Fetch all configured symbols
-        print(f"Fetching {len(symbols)} stocks from Alpha Vantage...")
-        print("(15s delay between requests to respect rate limits)\n")
-        fetch_multiple_stocks(symbols)
+        print(f"Fetching {len(symbols)} stocks from yfinance...")
+        print("(No rate limit — yfinance is free and unlimited)\n")
+        fetch_multiple_stocks(symbols, period=args.period)
 
     print("\nDone. CSVs saved to data/raw/")
 
@@ -88,6 +89,32 @@ def cmd_watchlist(args):
 
     if args.save:
         bot.save_report(results, "watchlist_scan")
+
+
+def cmd_monitor(args):
+    """Live monitoring with buy/sell/hold/stop-loss advice."""
+    from quant.live_monitor import LiveMonitor
+
+    symbols = args.symbols.split(",") if args.symbols else MONITOR_SYMBOLS
+    interval = args.interval or MONITOR_INTERVAL_MINUTES
+
+    monitor = LiveMonitor(symbols=symbols, interval_minutes=interval)
+
+    # Add any pre-existing positions
+    if args.positions:
+        for pos_str in args.positions.split(","):
+            parts = pos_str.strip().split("@")
+            if len(parts) == 2:
+                sym = parts[0].strip()
+                price = float(parts[1].strip())
+                monitor.add_position(sym, price)
+
+    if args.once:
+        # Single scan, no loop
+        monitor.run_once()
+    else:
+        # Continuous monitoring
+        monitor.start()
 
 
 def cmd_brief(args):
@@ -212,7 +239,6 @@ def cmd_info(args):
 
     for key, value in info.items():
         if key == "market_cap" and isinstance(value, (int, float)) and value > 0:
-            # Format in Crores for Indian audience
             crores = value / 1e7
             value = f"{crores:,.0f} Cr"
         print(f"  {key:<18} {value}")
@@ -252,11 +278,17 @@ def _print_analysis(result: dict):
     tech = result.get("technical", {})
     if tech:
         print(f"\n  Technical Indicators:")
-        print(f"    Price:      {tech.get('close', 0):.2f}")
-        print(f"    RSI:        {tech.get('rsi', 0):.2f}")
-        print(f"    MACD:       {tech.get('macd', 0):.4f}")
-        print(f"    Signal:     {tech.get('signal', 'N/A')}")
-        print(f"    Momentum:   {tech.get('momentum_5', 0):.2f}")
+        print(f"    Price:       {tech.get('close', 0):.2f}")
+        print(f"    RSI:         {tech.get('rsi', 0):.2f}")
+        print(f"    MACD:        {tech.get('macd', 0):.4f}")
+        print(f"    Signal:      {tech.get('signal', 'N/A')}")
+        print(f"    Momentum:    {tech.get('momentum_5', 0):.2f}")
+        print(f"    ADX:         {tech.get('adx', 0):.1f}")
+        print(f"    ATR:         {tech.get('atr', 0):.2f}")
+        st = "Bullish" if tech.get("supertrend_direction", 0) == 1 else "Bearish"
+        print(f"    Supertrend:  {st}")
+        print(f"    Support:     {tech.get('support', 0):.2f}")
+        print(f"    Resistance:  {tech.get('resistance', 0):.2f}")
 
     # News
     news = result.get("news_sentiment", {})
@@ -302,13 +334,17 @@ def main():
         epilog="""
 Examples:
   python main.py fetch                           # download data for all stocks
-  python main.py fetch --symbol RELIANCE.BSE     # download one stock
-  python main.py analyze RELIANCE.BSE            # analyze a stock
-  python main.py watchlist --symbols "RELIANCE.BSE,TCS.BSE,INFY.BSE"
+  python main.py fetch --symbol RELIANCE.NS      # download one stock
+  python main.py analyze RELIANCE.NS             # analyze a stock
+  python main.py watchlist --symbols "RELIANCE.NS,TCS.NS,INFY.NS"
+  python main.py monitor                         # live monitor (every 15 min)
+  python main.py monitor --interval 30           # custom interval
+  python main.py monitor --symbols "RELIANCE.NS,TCS.NS" --once
+  python main.py monitor --positions "RELIANCE.NS@2500,TCS.NS@3800"
   python main.py brief
-  python main.py news TCS.BSE --limit 20
+  python main.py news TCS.NS --limit 20
   python main.py status
-  python main.py info HDFCBANK.BSE
+  python main.py info HDFCBANK.NS
   python main.py ui                              # launch web UI
   python main.py ui --port 8080                  # custom port
         """,
@@ -317,15 +353,15 @@ Examples:
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     # fetch
-    p_fetch = subparsers.add_parser("fetch", help="Download stock data from Alpha Vantage")
-    p_fetch.add_argument("--symbol", help="Single symbol to fetch (e.g. RELIANCE.BSE)")
+    p_fetch = subparsers.add_parser("fetch", help="Download stock data from yfinance")
+    p_fetch.add_argument("--symbol", help="Single symbol to fetch (e.g. RELIANCE.NS)")
     p_fetch.add_argument("--symbols", help="Comma-separated symbols (overrides default)")
-    p_fetch.add_argument("--output-size", default="compact", choices=["compact", "full"],
-                         help="compact=100 days, full=20+ years (default: compact)")
+    p_fetch.add_argument("--period", default="1y",
+                         help="Data period: 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,max (default: 1y)")
 
     # analyze
     p_analyze = subparsers.add_parser("analyze", help="Analyze a single stock")
-    p_analyze.add_argument("symbol", help="Stock symbol (e.g. RELIANCE.BSE)")
+    p_analyze.add_argument("symbol", help="Stock symbol (e.g. RELIANCE.NS)")
     p_analyze.add_argument("--period", default="6mo", help="Data period (default: 6mo)")
     p_analyze.add_argument("--save", action="store_true", help="Save report to file")
 
@@ -334,6 +370,16 @@ Examples:
     p_watchlist.add_argument("--symbols", help="Comma-separated symbols (overrides default)")
     p_watchlist.add_argument("--period", default="6mo", help="Data period (default: 6mo)")
     p_watchlist.add_argument("--save", action="store_true", help="Save report to file")
+
+    # monitor
+    p_monitor = subparsers.add_parser("monitor", help="Live monitoring with trading advice")
+    p_monitor.add_argument("--symbols", help="Comma-separated symbols to monitor")
+    p_monitor.add_argument("--interval", type=int, default=None,
+                           help=f"Refresh interval in minutes (default: {MONITOR_INTERVAL_MINUTES})")
+    p_monitor.add_argument("--positions",
+                           help='Stocks you already own: "SYM@price,SYM@price" (e.g. "RELIANCE.NS@2500")')
+    p_monitor.add_argument("--once", action="store_true",
+                           help="Run a single scan instead of continuous monitoring")
 
     # brief
     p_brief = subparsers.add_parser("brief", help="Daily market brief")
@@ -370,6 +416,7 @@ Examples:
         "fetch": cmd_fetch,
         "analyze": cmd_analyze,
         "watchlist": cmd_watchlist,
+        "monitor": cmd_monitor,
         "brief": cmd_brief,
         "trending": cmd_trending,
         "news": cmd_news,

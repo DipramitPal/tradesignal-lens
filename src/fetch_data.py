@@ -1,6 +1,7 @@
 """
-Standalone Alpha Vantage data fetcher.
+Stock data fetcher using yfinance.
 Downloads daily OHLCV data for configured stock symbols and saves to CSV.
+No API key required — yfinance pulls from Yahoo Finance.
 
 Usage:
     cd src && python fetch_data.py          # Fetch all symbols from .env
@@ -9,34 +10,44 @@ Usage:
 
 import os
 import sys
-import time
 
 import pandas as pd
-from alpha_vantage.timeseries import TimeSeries
+import yfinance as yf
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from settings import ALPHA_VANTAGE_API_KEY, STOCK_SYMBOLS, DEFAULT_OUTPUT_SIZE, RAW_DATA_DIR
+from settings import STOCK_SYMBOLS, RAW_DATA_DIR
 
 
-def _get_timeseries():
-    """Lazily create TimeSeries client, with a friendly error if no API key."""
-    if not ALPHA_VANTAGE_API_KEY:
-        print("Error: ALPHA_VANTAGE_API_KEY is not set.")
-        print("Get a free key from https://www.alphavantage.co/support/#api-key")
-        print("Then add it to your .env file: ALPHA_VANTAGE_API_KEY=your_key_here")
-        sys.exit(1)
-    return TimeSeries(key=ALPHA_VANTAGE_API_KEY, output_format='pandas')
+def fetch_daily_stock_data(symbol: str, period: str = "1y") -> pd.DataFrame:
+    """
+    Fetch daily OHLCV data for a single stock via yfinance.
 
+    Args:
+        symbol: yfinance symbol (e.g. "RELIANCE.NS")
+        period: Data period — 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,max
 
-def fetch_daily_stock_data(symbol: str, output_size=DEFAULT_OUTPUT_SIZE) -> pd.DataFrame:
+    Returns:
+        DataFrame with OHLCV columns indexed by date.
+    """
     try:
-        ts = _get_timeseries()
-        print(f"Fetching daily data for {symbol} with output size {output_size}...")
-        data = ts.get_daily(symbol=symbol, outputsize=output_size)[0]
-        data = data.rename(columns=lambda x: x.split('. ')[1])
-        data.index.name = 'date'
-        print(f"Data for {symbol} fetched successfully.")
-        print(data.head(5))
+        print(f"Fetching daily data for {symbol} (period={period})...")
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period=period, auto_adjust=True)
+
+        if data.empty:
+            print(f"  No data returned for {symbol}")
+            return pd.DataFrame()
+
+        # Normalize column names to lowercase
+        data.columns = [c.lower() for c in data.columns]
+        data.index.name = "date"
+
+        # Keep only OHLCV
+        keep = ["open", "high", "low", "close", "volume"]
+        data = data[[c for c in keep if c in data.columns]]
+
+        print(f"  Fetched {len(data)} rows for {symbol}")
+        print(data.tail(5))
         return data
     except Exception as e:
         print(f"Error fetching data for {symbol}: {e}")
@@ -44,34 +55,38 @@ def fetch_daily_stock_data(symbol: str, output_size=DEFAULT_OUTPUT_SIZE) -> pd.D
 
 
 def save_to_csv(df: pd.DataFrame, symbol: str):
+    """Save or merge DataFrame into a CSV in the raw data directory."""
     os.makedirs(RAW_DATA_DIR, exist_ok=True)
     filename = os.path.join(RAW_DATA_DIR, f"{symbol.replace('.', '_')}.csv")
-    if os.path.exists(filename):
-        print(f"File {filename} already exists. Updating with new data...")
-        existing_df = pd.read_csv(filename, index_col='date', parse_dates=True)
-        print(f"Latest date available in file: {existing_df.index.max().strftime('%Y-%m-%d')}")
 
-        new_dates = set(df.index.strftime('%Y-%m-%d')) - set(existing_df.index.strftime('%Y-%m-%d'))
+    if os.path.exists(filename):
+        print(f"  File {filename} already exists. Merging new data...")
+        existing_df = pd.read_csv(filename, index_col="date", parse_dates=True)
+        print(f"  Latest date in file: {existing_df.index.max().strftime('%Y-%m-%d')}")
+
+        new_dates = set(df.index.strftime("%Y-%m-%d")) - set(
+            existing_df.index.strftime("%Y-%m-%d")
+        )
         data_to_add = pd.DataFrame()
         if new_dates:
-            print(f"New dates added for {symbol}: {sorted(new_dates)}")
-            data_to_add = df[df.index.strftime('%Y-%m-%d').isin(new_dates)]
+            print(f"  New dates added for {symbol}: {sorted(new_dates)}")
+            data_to_add = df[df.index.strftime("%Y-%m-%d").isin(new_dates)]
 
         combined_df = pd.concat([existing_df, data_to_add]).sort_index(ascending=False)
         combined_df.to_csv(filename)
     else:
         df.to_csv(filename)
-    print(f"Saved {symbol} to {filename}")
+
+    print(f"  Saved {symbol} to {filename}")
 
 
-def fetch_multiple_stocks(symbols: list[str]):
+def fetch_multiple_stocks(symbols: list[str], period: str = "1y"):
+    """Fetch and save data for multiple stocks."""
     for symbol in symbols:
         print(f"\nFetching {symbol}...")
-        df = fetch_daily_stock_data(symbol)
-
+        df = fetch_daily_stock_data(symbol, period=period)
         if not df.empty:
             save_to_csv(df, symbol)
-        time.sleep(15)  # Respect Alpha Vantage rate limits (5 calls/min)
 
 
 if __name__ == "__main__":
