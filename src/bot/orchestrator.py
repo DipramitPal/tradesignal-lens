@@ -110,6 +110,14 @@ class TradingBot:
             "volume": float(latest.get("volume", 0)),
             "ema_12": float(latest.get("ema_12", 0)),
             "ema_26": float(latest.get("ema_26", 0)),
+            "ema_50": float(latest.get("ema_50", 0)),
+            "ema_200": float(latest.get("ema_200", 0)),
+            "atr": float(latest.get("atr", 0)),
+            "adx": float(latest.get("adx", 0)),
+            "supertrend_direction": float(latest.get("supertrend_direction", 0)),
+            "support": float(latest.get("support", 0)),
+            "resistance": float(latest.get("resistance", 0)),
+            "vwap": float(latest.get("vwap", 0)),
         }
 
         # Generate signal from existing signal_generator

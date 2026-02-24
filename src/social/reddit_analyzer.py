@@ -131,7 +131,7 @@ class RedditAnalyzer:
         Get sentiment for a specific stock from Reddit discussions.
 
         Args:
-            symbol: Stock symbol (e.g. "RELIANCE" or "RELIANCE.BSE")
+            symbol: Stock symbol (e.g. "RELIANCE" or "RELIANCE.NS")
             subreddits: Subreddits to search
             limit: Number of posts to analyze
 

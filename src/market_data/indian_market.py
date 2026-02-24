@@ -1,32 +1,28 @@
 """
-Indian stock market data fetcher using Alpha Vantage.
+Indian stock market data fetcher using yfinance.
 Supports NSE and BSE listed stocks and historical data.
+No API key required — yfinance pulls directly from Yahoo Finance.
 
 Data flow:
   1. Run fetch_data.py (or `python main.py fetch`) to download OHLCV CSVs
   2. This module loads from those CSVs for analysis
-  3. Falls back to live Alpha Vantage API if no local data exists
+  3. Falls back to live yfinance API call if no local data exists
 """
 
 import os
-import time
 import pandas as pd
 from datetime import datetime, timedelta
 from pathlib import Path
 
+import yfinance as yf
+
 import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from settings import (
-    ALPHA_VANTAGE_API_KEY, DEFAULT_OUTPUT_SIZE,
-    RAW_DATA_DIR, PROCESSED_DATA_DIR, STOCK_SYMBOLS,
-)
+from settings import RAW_DATA_DIR, PROCESSED_DATA_DIR, STOCK_SYMBOLS
 
 
 class IndianMarketData:
-    """Fetches and manages Indian stock market data via Alpha Vantage."""
-
-    # Periods that fit within Alpha Vantage "compact" (100 data points)
-    COMPACT_PERIODS = {"1d", "5d", "1mo", "3mo"}
+    """Fetches and manages Indian stock market data via yfinance."""
 
     # Map period strings to approximate calendar days
     PERIOD_DAYS = {
@@ -35,20 +31,15 @@ class IndianMarketData:
         "10y": 3650,
     }
 
+    # Valid yfinance period values
+    VALID_PERIODS = {
+        "1d", "5d", "1mo", "3mo", "6mo", "1y", "2y", "5y", "10y", "max",
+    }
+
     def __init__(self, symbols: list[str] | None = None):
         self.symbols = symbols or STOCK_SYMBOLS
         RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
         PROCESSED_DATA_DIR.mkdir(parents=True, exist_ok=True)
-
-        self._ts = None
-        if ALPHA_VANTAGE_API_KEY:
-            try:
-                from alpha_vantage.timeseries import TimeSeries
-                self._ts = TimeSeries(
-                    key=ALPHA_VANTAGE_API_KEY, output_format="pandas"
-                )
-            except ImportError:
-                print("  Warning: alpha_vantage package not installed")
 
     def fetch_stock(
         self,
@@ -60,12 +51,12 @@ class IndianMarketData:
         Fetch historical OHLCV data for a single stock.
 
         Loads from local CSV first (populated by fetch_data.py).
-        Falls back to live Alpha Vantage API call if no local data exists.
+        Falls back to live yfinance API call if no local data exists.
 
         Args:
-            symbol: Alpha Vantage symbol (e.g. "RELIANCE.BSE")
+            symbol: yfinance symbol (e.g. "RELIANCE.NS")
             period: Data period - 1d,5d,1mo,3mo,6mo,1y,2y,5y,10y,max
-            interval: Ignored (Alpha Vantage daily only), kept for API compat
+            interval: Data interval - 1d (daily) is default
 
         Returns:
             DataFrame with OHLCV data, indexed by Date.
@@ -78,32 +69,31 @@ class IndianMarketData:
                 print(f"  Loaded {len(df)} rows for {symbol} from CSV")
                 return df
 
-        # Fall back to live Alpha Vantage fetch
-        if self._ts is None:
-            print(f"  No local data and no Alpha Vantage API configured for {symbol}")
-            return pd.DataFrame()
+        # Fall back to live yfinance fetch
+        return self._fetch_live(symbol, period, interval)
 
-        return self._fetch_live(symbol, period)
-
-    def _fetch_live(self, symbol: str, period: str = "1y") -> pd.DataFrame:
-        """Fetch live daily data from Alpha Vantage API."""
+    def _fetch_live(
+        self, symbol: str, period: str = "1y", interval: str = "1d"
+    ) -> pd.DataFrame:
+        """Fetch live data from yfinance."""
         try:
-            output_size = "compact" if period in self.COMPACT_PERIODS else "full"
-            print(f"  Fetching {symbol} from Alpha Vantage ({output_size})...")
-            data = self._ts.get_daily(symbol=symbol, outputsize=output_size)[0]
+            yf_period = period if period in self.VALID_PERIODS else "1y"
+            print(f"  Fetching {symbol} from yfinance (period={yf_period}, interval={interval})...")
 
-            # Alpha Vantage columns: "1. open", "2. high", etc.
-            data = data.rename(
-                columns=lambda x: x.split(". ")[1] if ". " in x else x
-            )
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period=yf_period, interval=interval, auto_adjust=True)
+
+            if data.empty:
+                print(f"  No data returned for {symbol}")
+                return pd.DataFrame()
+
+            # Normalize columns
+            data.columns = [c.lower() for c in data.columns]
             data.index.name = "date"
 
             # Keep only OHLCV
             keep_cols = ["open", "high", "low", "close", "volume"]
             data = data[[c for c in keep_cols if c in data.columns]]
-
-            # Trim to requested period
-            data = self._trim_to_period(data, period)
 
             # Save to CSV for future use
             self._save_csv(data, symbol)
@@ -133,72 +123,77 @@ class IndianMarketData:
                 results[symbol] = df
                 if save:
                     self._save_csv(df, symbol)
-            # Rate limit if fetching live
-            if self._ts and df.empty:
-                time.sleep(15)
 
         print(f"\nLoaded data for {len(results)}/{len(symbols)} stocks")
         return results
 
     def fetch_indices(self, period: str = "1y") -> dict[str, pd.DataFrame]:
         """
-        Fetch major Indian index data.
-        Note: Alpha Vantage has limited free-tier index support.
-        Returns whatever is available from CSV or API.
+        Fetch major Indian index data via yfinance.
+        yfinance supports NSE indices directly.
         """
         index_symbols = {
-            "SENSEX": "BSE:SENSEX",
+            "SENSEX": "^BSESN",
             "NIFTY_50": "^NSEI",
             "NIFTY_BANK": "^NSEBANK",
         }
         results = {}
         for name, symbol in index_symbols.items():
-            df = self.load_stock_data(symbol)
-            if not df.empty:
-                df = self._trim_to_period(df, period)
-                print(f"  Loaded index {name} from CSV ({len(df)} rows)")
-                results[name] = df
+            try:
+                # Try CSV first
+                df = self.load_stock_data(symbol)
+                if not df.empty:
+                    df = self._trim_to_period(df, period)
+                    if not df.empty:
+                        print(f"  Loaded index {name} from CSV ({len(df)} rows)")
+                        results[name] = df
+                        continue
+
+                # Fetch live
+                ticker = yf.Ticker(symbol)
+                data = ticker.history(period=period, auto_adjust=True)
+                if not data.empty:
+                    data.columns = [c.lower() for c in data.columns]
+                    data.index.name = "date"
+                    keep = ["open", "high", "low", "close", "volume"]
+                    data = data[[c for c in keep if c in data.columns]]
+                    results[name] = data
+                    self._save_csv(data, symbol)
+                    print(f"  Fetched index {name} ({len(data)} rows)")
+            except Exception as e:
+                print(f"  Error fetching index {name}: {e}")
+
         return results
 
     def get_stock_info(self, symbol: str) -> dict:
         """
-        Get basic info about a stock.
-        Uses local CSV data for price info. Tries Alpha Vantage
-        company overview API if available (uses 1 API call).
+        Get basic info about a stock using yfinance.
+        Combines local CSV price data with yfinance metadata.
         """
-        # Start with basic info from CSV
         info = self._basic_info(symbol)
 
-        # Optionally enrich with Alpha Vantage overview
-        if ALPHA_VANTAGE_API_KEY:
-            try:
-                from alpha_vantage.fundamentaldata import FundamentalData
-                fd = FundamentalData(
-                    key=ALPHA_VANTAGE_API_KEY, output_format="json"
+        try:
+            ticker = yf.Ticker(symbol)
+            yf_info = ticker.info
+            if yf_info:
+                info["name"] = yf_info.get("shortName", info["name"])
+                info["sector"] = yf_info.get("sector", "N/A")
+                info["industry"] = yf_info.get("industry", "N/A")
+                info["market_cap"] = int(yf_info.get("marketCap", 0) or 0)
+                info["pe_ratio"] = float(yf_info.get("trailingPE", 0) or 0)
+                info["52w_high"] = float(yf_info.get("fiftyTwoWeekHigh", 0) or 0)
+                info["52w_low"] = float(yf_info.get("fiftyTwoWeekLow", 0) or 0)
+                info["dividend_yield"] = float(
+                    yf_info.get("dividendYield", 0) or 0
                 )
-                overview, _ = fd.get_company_overview(symbol=symbol)
-                if overview:
-                    info["name"] = overview.get("Name", info["name"])
-                    info["sector"] = overview.get("Sector", "N/A")
-                    info["industry"] = overview.get("Industry", "N/A")
-                    info["market_cap"] = int(
-                        overview.get("MarketCapitalization", 0) or 0
-                    )
-                    info["pe_ratio"] = float(
-                        overview.get("PERatio", 0) or 0
-                    )
-                    info["52w_high"] = float(
-                        overview.get("52WeekHigh", 0) or 0
-                    )
-                    info["52w_low"] = float(
-                        overview.get("52WeekLow", 0) or 0
-                    )
-                    info["dividend_yield"] = float(
-                        overview.get("DividendYield", 0) or 0
-                    )
-                    info["currency"] = overview.get("Currency", "INR")
-            except Exception as e:
-                print(f"  Could not fetch overview for {symbol}: {e}")
+                info["currency"] = yf_info.get("currency", "INR")
+                info["current_price"] = float(
+                    yf_info.get("currentPrice", 0)
+                    or yf_info.get("regularMarketPrice", 0)
+                    or info["current_price"]
+                )
+        except Exception as e:
+            print(f"  Could not fetch info for {symbol}: {e}")
 
         return info
 
@@ -207,7 +202,7 @@ class IndianMarketData:
         df = self.load_stock_data(symbol)
         current_price = float(df.iloc[-1]["close"]) if not df.empty else 0
 
-        # Derive a readable name from the symbol (e.g. "RELIANCE.BSE" -> "RELIANCE")
+        # Derive a readable name from the symbol (e.g. "RELIANCE.NS" -> "RELIANCE")
         name = symbol.split(".")[0].replace("_", " ")
 
         return {

@@ -44,7 +44,7 @@ class NewsFetcher:
         Fetch news for a specific stock from available sources.
 
         Args:
-            symbol: Stock symbol (e.g. "RELIANCE.BSE")
+            symbol: Stock symbol (e.g. "RELIANCE.NS")
             company_name: Full company name for better search
             max_results: Maximum number of articles to return
 

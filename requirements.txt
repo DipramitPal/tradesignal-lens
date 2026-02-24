@@ -2,8 +2,8 @@
 pandas>=2.0
 numpy>=1.24
 
-# Stock data (primary data source)
-alpha_vantage>=2.3.1
+# Stock data (primary data source — free, no API key needed)
+yfinance>=0.2.31
 
 # News fetching
 feedparser>=6.0

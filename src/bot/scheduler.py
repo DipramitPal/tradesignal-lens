@@ -1,6 +1,7 @@
 """
-Scheduler for autonomous 24/7 bot mode (future enhancement).
-Provides scheduled task execution aligned with Indian market hours.
+Scheduler for autonomous bot mode.
+Provides scheduled task execution aligned with Indian market hours,
+and integrates with the live monitoring engine.
 """
 
 import time
@@ -16,16 +17,12 @@ class TradingScheduler:
     """
     Scheduler for running the trading bot autonomously.
 
-    Planned schedule:
-    - Pre-market (8:30 AM IST): Daily brief, news scan, set alerts
+    Schedule:
+    - Pre-market (8:30 AM IST): Daily brief, news scan
     - Market open (9:15 AM IST): Execute pending signals
-    - Intraday (every 30 min): Monitor positions, check alerts
+    - Intraday (configurable interval): Live monitoring scan
     - Market close (3:30 PM IST): End-of-day summary
     - After hours (6:00 PM IST): Deep analysis for next day
-    - Overnight: Social media monitoring, global market scan
-
-    This is a foundation module. Full autonomous mode will be
-    implemented as a future enhancement.
     """
 
     def __init__(self):
@@ -51,7 +48,7 @@ class TradingScheduler:
         })
 
     def start(self):
-        """Start the scheduler loop (placeholder for future implementation)."""
+        """Start the scheduler loop."""
         from market_data.market_utils import is_market_open, now_ist, next_market_open
 
         self.running = True
