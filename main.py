@@ -7,6 +7,7 @@ Usage:
     python main.py analyze RELIANCE.NS          # Analyze a single stock
     python main.py watchlist                    # Scan full watchlist
     python main.py monitor                      # Live monitoring with buy/sell/SL advice
+    python main.py scan                         # One-shot full quant scan (15m + daily MTF)
     python main.py brief                        # Daily market brief
     python main.py trending                     # Trending tickers on social media
     python main.py news RELIANCE.NS             # News for a stock
@@ -23,7 +24,7 @@ import os
 # Ensure src/ is on the path
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "src"))
 
-from settings import STOCK_SYMBOLS, MONITOR_SYMBOLS, MONITOR_INTERVAL_MINUTES
+from settings import STOCK_SYMBOLS, MONITOR_SYMBOLS, MONITOR_INTERVAL_MINUTES, DEFAULT_ACCOUNT_VALUE, SCAN_UNIVERSE
 
 
 def cmd_fetch(args):
@@ -115,6 +116,31 @@ def cmd_monitor(args):
     else:
         # Continuous monitoring
         monitor.start()
+
+
+def cmd_scan(args):
+    """One-shot full quant scan using 15m + daily MTF pipeline."""
+    from quant.live_monitor import LiveMonitor
+    from quant.universe_scanner import UniverseScanner
+
+    account = getattr(args, 'account', DEFAULT_ACCOUNT_VALUE)
+    use_universe = getattr(args, 'universe', False)
+
+    if use_universe:
+        print("\n  Running universe pre-screen...")
+        scanner = UniverseScanner()
+        from market_data.data_cache import DataCache
+        cache = DataCache()
+        cache.warm_cache(SCAN_UNIVERSE[:50], daily_period='1mo', intraday_days=2)
+        passed = scanner.scan_lightweight(cache.daily_cache)
+        symbols = passed[:20] if passed else MONITOR_SYMBOLS
+        print(f"  Using {len(symbols)} symbols from universe scan")
+    else:
+        symbols = args.symbols.split(",") if args.symbols else MONITOR_SYMBOLS
+
+    monitor = LiveMonitor(symbols=symbols, account_value=account)
+    results = monitor.run_once()
+    print(f"\n  Scan complete. {len(results)} symbols analyzed.")
 
 
 def cmd_brief(args):
@@ -401,6 +427,15 @@ Examples:
     p_info = subparsers.add_parser("info", help="Show stock info")
     p_info.add_argument("symbol", help="Stock symbol")
 
+    # scan
+    p_scan = subparsers.add_parser("scan", help="One-shot full quant scan (15m + daily MTF)")
+    p_scan.add_argument("--symbols", type=str, default="",
+                        help="Comma-separated list of symbols to scan")
+    p_scan.add_argument("--universe", action="store_true",
+                        help="Enable dynamic universe scanning (NIFTY 200 pre-screen)")
+    p_scan.add_argument("--account", type=float, default=DEFAULT_ACCOUNT_VALUE,
+                        help=f"Account value for position sizing (default: {DEFAULT_ACCOUNT_VALUE:.0f})")
+
     # ui
     p_ui = subparsers.add_parser("ui", help="Launch budget advisor web UI")
     p_ui.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
@@ -417,6 +452,7 @@ Examples:
         "analyze": cmd_analyze,
         "watchlist": cmd_watchlist,
         "monitor": cmd_monitor,
+        "scan": cmd_scan,
         "brief": cmd_brief,
         "trending": cmd_trending,
         "news": cmd_news,

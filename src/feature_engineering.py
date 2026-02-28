@@ -102,6 +102,114 @@ def add_technical_indicators(df: pd.DataFrame) -> pd.DataFrame:
     # --- Volume Volatility ---
     df["volume_volatility"] = df["volume"].rolling(window=20).std()
 
+    # =====================================================================
+    # NEW INDICATORS (v2 – hedge-fund-grade quant stack)
+    # =====================================================================
+
+    # --- EMA-9 and EMA-21 (fast intraday trend) ---
+    df["ema_9"] = df["close"].ewm(span=9, adjust=False).mean()
+    df["ema_21"] = df["close"].ewm(span=21, adjust=False).mean()
+
+    # --- Bollinger Band Width (squeeze detection) ---
+    if "bb_high" in df.columns and "bb_low" in df.columns and "bb_mid" in df.columns:
+        df["bb_width"] = (df["bb_high"] - df["bb_low"]) / df["bb_mid"]
+
+    # --- On-Balance Volume (OBV) ---
+    obv = pd.Series(0.0, index=df.index)
+    obv.iloc[0] = df["volume"].iloc[0]
+    for i in range(1, len(df)):
+        if df["close"].iloc[i] > df["close"].iloc[i - 1]:
+            obv.iloc[i] = obv.iloc[i - 1] + df["volume"].iloc[i]
+        elif df["close"].iloc[i] < df["close"].iloc[i - 1]:
+            obv.iloc[i] = obv.iloc[i - 1] - df["volume"].iloc[i]
+        else:
+            obv.iloc[i] = obv.iloc[i - 1]
+    df["obv"] = obv
+
+    # --- Stochastic RSI (14, 14, 3, 3) ---
+    if "rsi" in df.columns:
+        rsi_series = df["rsi"]
+        rsi_min = rsi_series.rolling(window=14).min()
+        rsi_max = rsi_series.rolling(window=14).max()
+        stoch_rsi_raw = (rsi_series - rsi_min) / (rsi_max - rsi_min + 1e-10)
+        df["stoch_rsi_k"] = stoch_rsi_raw.rolling(window=3).mean() * 100
+        df["stoch_rsi_d"] = df["stoch_rsi_k"].rolling(window=3).mean()
+
+    # --- Ichimoku Cloud ---
+    high_9 = df["high"].rolling(window=9).max()
+    low_9 = df["low"].rolling(window=9).min()
+    df["ichimoku_tenkan"] = (high_9 + low_9) / 2
+
+    high_26 = df["high"].rolling(window=26).max()
+    low_26 = df["low"].rolling(window=26).min()
+    df["ichimoku_kijun"] = (high_26 + low_26) / 2
+
+    df["ichimoku_senkou_a"] = ((df["ichimoku_tenkan"] + df["ichimoku_kijun"]) / 2).shift(26)
+
+    high_52 = df["high"].rolling(window=52).max()
+    low_52 = df["low"].rolling(window=52).min()
+    df["ichimoku_senkou_b"] = ((high_52 + low_52) / 2).shift(26)
+
+    df["ichimoku_chikou"] = df["close"].shift(-26)
+
+    # --- Chaikin Money Flow (CMF, 20-period) ---
+    mf_multiplier = ((df["close"] - df["low"]) - (df["high"] - df["close"])) / (
+        df["high"] - df["low"] + 1e-10
+    )
+    mf_volume = mf_multiplier * df["volume"]
+    df["cmf"] = mf_volume.rolling(window=20).sum() / df["volume"].rolling(window=20).sum()
+
+    # --- Money Flow Index (MFI, 14-period) ---
+    typical_price_mfi = (df["high"] + df["low"] + df["close"]) / 3
+    raw_money_flow = typical_price_mfi * df["volume"]
+    tp_diff = typical_price_mfi.diff()
+    positive_flow = (raw_money_flow * (tp_diff > 0).astype(float)).rolling(14).sum()
+    negative_flow = (raw_money_flow * (tp_diff < 0).astype(float)).rolling(14).sum()
+    money_ratio = positive_flow / (negative_flow + 1e-10)
+    df["mfi"] = 100 - (100 / (1 + money_ratio))
+
+    # --- Keltner Channels (EMA 20 ± 1.5 × ATR 10) ---
+    keltner_ema = df["close"].ewm(span=20, adjust=False).mean()
+    kc_atr = _compute_atr_simple(df, period=10)
+    df["keltner_high"] = keltner_ema + 1.5 * kc_atr
+    df["keltner_low"] = keltner_ema - 1.5 * kc_atr
+    df["keltner_mid"] = keltner_ema
+
+    # Squeeze detection: BB inside Keltner
+    if "bb_low" in df.columns and "bb_high" in df.columns:
+        df["squeeze_on"] = (
+            (df["bb_low"] > df["keltner_low"]) & (df["bb_high"] < df["keltner_high"])
+        ).astype(int)
+        # Squeeze fires when it was on and now off
+        df["squeeze_fire"] = (
+            (df["squeeze_on"].shift(1) == 1) & (df["squeeze_on"] == 0)
+        ).astype(int)
+
+    # --- Rate of Change (ROC, 12-period) ---
+    df["roc"] = ((df["close"] - df["close"].shift(12)) / (df["close"].shift(12) + 1e-10)) * 100
+
+    # --- Williams %R (14-period) ---
+    high_14 = df["high"].rolling(window=14).max()
+    low_14 = df["low"].rolling(window=14).min()
+    df["williams_r"] = ((high_14 - df["close"]) / (high_14 - low_14 + 1e-10)) * -100
+
+    # --- Parabolic SAR ---
+    df["psar"], df["psar_direction"] = _compute_parabolic_sar(df)
+
+    # --- Fibonacci Auto-Retracement (from 50-bar swing high/low) ---
+    lookback_fib = min(50, len(df))
+    if lookback_fib >= 10:
+        swing_high = df["high"].iloc[-lookback_fib:].max()
+        swing_low = df["low"].iloc[-lookback_fib:].min()
+        fib_range = swing_high - swing_low
+        df["fib_0"] = swing_high
+        df["fib_236"] = swing_high - 0.236 * fib_range
+        df["fib_382"] = swing_high - 0.382 * fib_range
+        df["fib_500"] = swing_high - 0.500 * fib_range
+        df["fib_618"] = swing_high - 0.618 * fib_range
+        df["fib_786"] = swing_high - 0.786 * fib_range
+        df["fib_1"] = swing_low
+
     return df
 
 
@@ -197,6 +305,138 @@ def _compute_supertrend(
                 direction.iloc[i] = 1
 
     return supertrend, direction
+
+
+def _compute_atr_simple(df: pd.DataFrame, period: int = 10) -> pd.Series:
+    """Simple ATR computation for Keltner Channels."""
+    high_low = df["high"] - df["low"]
+    high_close_prev = (df["high"] - df["close"].shift(1)).abs()
+    low_close_prev = (df["low"] - df["close"].shift(1)).abs()
+    tr = pd.concat([high_low, high_close_prev, low_close_prev], axis=1).max(axis=1)
+    return tr.rolling(window=period).mean()
+
+
+def _compute_parabolic_sar(
+    df: pd.DataFrame, af_start: float = 0.02, af_step: float = 0.02,
+    af_max: float = 0.20,
+) -> tuple[pd.Series, pd.Series]:
+    """
+    Compute Parabolic SAR.
+
+    Returns:
+        (sar_values, direction) where direction = 1 (bullish) or -1 (bearish)
+    """
+    n = len(df)
+    sar = pd.Series(0.0, index=df.index)
+    direction = pd.Series(0.0, index=df.index)
+
+    if n < 2:
+        return sar, direction
+
+    # Initialize
+    is_uptrend = df["close"].iloc[1] > df["close"].iloc[0]
+    af = af_start
+    if is_uptrend:
+        sar.iloc[0] = df["low"].iloc[0]
+        ep = df["high"].iloc[0]
+        direction.iloc[0] = 1
+    else:
+        sar.iloc[0] = df["high"].iloc[0]
+        ep = df["low"].iloc[0]
+        direction.iloc[0] = -1
+
+    for i in range(1, n):
+        prev_sar = sar.iloc[i - 1]
+
+        if is_uptrend:
+            sar_val = prev_sar + af * (ep - prev_sar)
+            # SAR must not be above the prior two lows
+            sar_val = min(sar_val, df["low"].iloc[i - 1])
+            if i >= 2:
+                sar_val = min(sar_val, df["low"].iloc[i - 2])
+
+            if df["low"].iloc[i] < sar_val:
+                # Flip to downtrend
+                is_uptrend = False
+                sar_val = ep
+                ep = df["low"].iloc[i]
+                af = af_start
+                direction.iloc[i] = -1
+            else:
+                direction.iloc[i] = 1
+                if df["high"].iloc[i] > ep:
+                    ep = df["high"].iloc[i]
+                    af = min(af + af_step, af_max)
+        else:
+            sar_val = prev_sar + af * (ep - prev_sar)
+            # SAR must not be below the prior two highs
+            sar_val = max(sar_val, df["high"].iloc[i - 1])
+            if i >= 2:
+                sar_val = max(sar_val, df["high"].iloc[i - 2])
+
+            if df["high"].iloc[i] > sar_val:
+                # Flip to uptrend
+                is_uptrend = True
+                sar_val = ep
+                ep = df["high"].iloc[i]
+                af = af_start
+                direction.iloc[i] = 1
+            else:
+                direction.iloc[i] = -1
+                if df["low"].iloc[i] < ep:
+                    ep = df["low"].iloc[i]
+                    af = min(af + af_step, af_max)
+
+        sar.iloc[i] = sar_val
+
+    return sar, direction
+
+
+def compute_pivot_points(prev_ohlc: dict) -> dict:
+    """
+    Compute Camarilla Pivot Points + Central Pivot Range from previous day's OHLC.
+
+    Args:
+        prev_ohlc: dict with keys 'open', 'high', 'low', 'close'
+
+    Returns:
+        dict with pivot, R1-R4, S1-S4, TC, BC, CPR_width
+    """
+    if not prev_ohlc:
+        return {}
+
+    h = prev_ohlc["high"]
+    l = prev_ohlc["low"]
+    c = prev_ohlc["close"]
+    hl_range = h - l
+
+    pivot = (h + l + c) / 3
+
+    # Camarilla levels
+    r4 = c + hl_range * 1.1 / 2
+    r3 = c + hl_range * 1.1 / 4
+    r2 = c + hl_range * 1.1 / 6
+    r1 = c + hl_range * 1.1 / 12
+
+    s1 = c - hl_range * 1.1 / 12
+    s2 = c - hl_range * 1.1 / 6
+    s3 = c - hl_range * 1.1 / 4
+    s4 = c - hl_range * 1.1 / 2
+
+    # Central Pivot Range
+    bc = (h + l) / 2
+    tc = (pivot - bc) + pivot
+    cpr_width = abs(tc - bc) / (pivot + 1e-10)
+
+    return {
+        "pivot": round(pivot, 2),
+        "r1": round(r1, 2), "r2": round(r2, 2),
+        "r3": round(r3, 2), "r4": round(r4, 2),
+        "s1": round(s1, 2), "s2": round(s2, 2),
+        "s3": round(s3, 2), "s4": round(s4, 2),
+        "tc": round(tc, 2), "bc": round(bc, 2),
+        "cpr_width": round(cpr_width, 4),
+    }
 
 
 def process_all_stocks():

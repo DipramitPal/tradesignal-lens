@@ -18,6 +18,8 @@ class SignalCombiner:
         technical_signals: dict,
         news_sentiment: dict,
         social_sentiment: dict,
+        mtf_score: float | None = None,
+        regime: str = "",
     ) -> dict:
         """
         Combine technical, news, and social signals into a unified signal.
@@ -26,12 +28,17 @@ class SignalCombiner:
             technical_signals: dict with keys like rsi, macd, signal, etc.
             news_sentiment: dict with overall_compound, overall_label
             social_sentiment: dict with score, sentiment
+            mtf_score: pre-computed MTF confluence score (if available)
+            regime: market regime string (if available)
 
         Returns:
             dict with combined_score, recommendation, confidence, breakdown
         """
         # --- Technical score (-1 to +1) ---
-        tech_score = self._compute_technical_score(technical_signals)
+        if mtf_score is not None:
+            tech_score = max(-1.0, min(1.0, mtf_score))
+        else:
+            tech_score = self._compute_technical_score(technical_signals)
 
         # --- News sentiment score (-1 to +1) ---
         news_score = news_sentiment.get("overall_compound", 0.0)
