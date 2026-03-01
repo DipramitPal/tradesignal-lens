@@ -91,6 +91,36 @@ MAX_SECTOR_EXPOSURE = float(os.getenv("MAX_SECTOR_EXPOSURE", "0.30"))
 DAILY_LOSS_LIMIT = float(os.getenv("DAILY_LOSS_LIMIT", "0.04"))
 DEFAULT_ACCOUNT_VALUE = float(os.getenv("DEFAULT_ACCOUNT_VALUE", "1000000"))
 
+# --- Trade Journal ---
+TRADE_JOURNAL_FILE = str(DATA_DIR / "trade_journal.json")
+
+# --- Correlation / Portfolio Risk ---
+CORRELATION_LOOKBACK = int(os.getenv("CORRELATION_LOOKBACK", "30"))
+MAX_CORRELATION = float(os.getenv("MAX_CORRELATION", "0.70"))
+MAX_DRAWDOWN_PCT = float(os.getenv("MAX_DRAWDOWN_PCT", "0.08"))
+MAX_DAILY_VAR_PCT = float(os.getenv("MAX_DAILY_VAR_PCT", "0.03"))
+
+# --- Exit Scoring ---
+EXIT_SCORE_THRESHOLD = float(os.getenv("EXIT_SCORE_THRESHOLD", "0.60"))
+
+# --- Regime-Adaptive Risk ---
+REGIME_RISK_MAP = {
+    "TRENDING_UP": 0.025,       # 2.5% — ride the trend
+    "RANGE_BOUND": 0.020,       # 2.0% — normal
+    "TRENDING_DOWN": 0.010,     # 1.0% — defensive
+    "VOLATILE": 0.010,          # 1.0% — preserve capital
+}
+
+# --- Scaling / Partial Exits ---
+SCALING_LOTS = int(os.getenv("SCALING_LOTS", "3"))
+
+# --- Gap Detection ---
+GAP_THRESHOLD_PCT = float(os.getenv("GAP_THRESHOLD_PCT", "3.0"))
+
+# --- Market Hours Filtering ---
+MARKET_OPEN_BUFFER_MINUTES = int(os.getenv("MARKET_OPEN_BUFFER_MINUTES", "15"))
+MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("MARKET_CLOSE_BUFFER_MINUTES", "15"))
+
 # --- NIFTY 200 Scan Universe ---
 # Full NIFTY 200 constituent list (NSE symbols with .NS suffix).
 # Updated quarterly; source: NSE India index composition.

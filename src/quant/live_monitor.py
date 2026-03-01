@@ -1,16 +1,26 @@
 """
-Live stock monitoring engine v2 — Hedge-fund-grade quant scanning.
+Live stock monitoring engine v3 — Hedge-fund-grade quant scanning.
 
 15-minute intraday candle based with multi-timeframe confluence,
 divergence detection, regime classification, adaptive SL/TP,
 dynamic universe scanning, and sector rotation analysis.
+
+v3 enhancements:
+  - Partial exit / scaling out (sell in thirds at 1R, 2R, trail remainder)
+  - Daily loss limit enforcement (defense mode)
+  - Market-hours signal filtering (suppress BUY in open/close buffers)
+  - Gap-up / gap-down detection
+  - Multi-stock ranking with capital allocation priority
+  - Dynamic universe rescanning
+  - Correlation-aware position sizing
+  - Trade journal integration
 """
 
 import os
 import sys
 import time
 import signal as os_signal
-from datetime import datetime
+from datetime import datetime, time as dt_time
 from typing import Optional
 
 import pandas as pd
@@ -21,6 +31,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from settings import (
     MONITOR_INTERVAL_MINUTES, MONITOR_SYMBOLS, SCAN_INTERVAL_MINUTES,
     DEFAULT_ACCOUNT_VALUE, RISK_PER_TRADE_PCT, SYMBOL_SECTOR,
+    DAILY_LOSS_LIMIT, GAP_THRESHOLD_PCT, SCALING_LOTS,
+    MARKET_OPEN_BUFFER_MINUTES, MARKET_CLOSE_BUFFER_MINUTES,
+    UNIVERSE_RESCAN_INTERVAL, EXIT_SCORE_THRESHOLD,
 )
 from feature_engineering import add_technical_indicators, compute_pivot_points
 from signal_generator import (
@@ -30,19 +43,25 @@ from signal_generator import (
     generate_signals, compute_stop_loss, compute_trailing_stop,
 )
 from market_data.data_cache import DataCache
-from quant.regime_classifier import classify_regime, get_weight_table
+from market_data.market_utils import now_ist, MARKET_OPEN, MARKET_CLOSE
+from quant.regime_classifier import classify_regime, get_weight_table, is_in_transition
 from quant.divergence_detector import detect_all_divergences, summarize_divergences
 from quant.risk_manager import (
     compute_initial_sl, compute_phase_sl, check_exit_triggers,
-    compute_position_size, compute_entry_quality,
+    compute_exit_score, compute_position_size, compute_entry_quality,
+    check_rr_gate, get_regime_risk_pct,
 )
 from quant.sector_analyzer import SectorAnalyzer
+from quant.trade_journal import TradeJournal
+from quant.correlation_engine import CorrelationEngine
+from quant.universe_scanner import UniverseScanner
 
 
 class Position:
-    """Tracks a single stock position (bought/not bought)."""
+    """Tracks a single stock position with scaling-out support."""
 
-    def __init__(self, symbol: str, entry_price: float, entry_date: str):
+    def __init__(self, symbol: str, entry_price: float, entry_date: str,
+                 total_shares: int = 0, lots: int = SCALING_LOTS):
         self.symbol = symbol
         self.entry_price = entry_price
         self.entry_date = entry_date
@@ -50,6 +69,12 @@ class Position:
         self.stop_loss = 0.0
         self.trailing_stop = 0.0
         self.phase = "INITIAL"
+
+        # Scaling out
+        self.total_shares = total_shares
+        self.lots_remaining = lots  # starts at SCALING_LOTS (default 3)
+        self.lots_initial = lots
+        self.shares_per_lot = max(1, total_shares // lots) if total_shares > 0 else 0
 
     def update(self, current_price: float, atr: float,
                parabolic_sar: float = 0):
@@ -75,11 +100,34 @@ class Position:
     def pnl_at(self, current_price: float) -> float:
         return round(((current_price - self.entry_price) / self.entry_price) * 100, 2)
 
+    def r_multiple(self, current_price: float) -> float:
+        """Current R-multiple (profit in units of initial risk)."""
+        initial_risk = abs(self.entry_price - self.stop_loss) if self.stop_loss > 0 else (self.entry_price * 0.015)
+        if initial_risk <= 0:
+            initial_risk = self.entry_price * 0.015
+        return round((current_price - self.entry_price) / initial_risk, 2)
+
+    def shares_for_partial(self) -> int:
+        """Number of shares to sell in one partial exit (1 lot)."""
+        if self.lots_remaining <= 1:
+            # Last lot — sell everything remaining
+            return self.total_shares
+        return self.shares_per_lot
+
+    def record_partial_exit(self, shares_sold: int):
+        """Update lot tracking after a partial exit."""
+        self.lots_remaining = max(0, self.lots_remaining - 1)
+        self.total_shares = max(0, self.total_shares - shares_sold)
+
 
 class LiveMonitor:
     """
     Monitors stocks at 15-minute intervals using an intraday + daily
     multi-timeframe pipeline with regime-adaptive signal scoring.
+
+    v3: Includes partial exits, daily loss limit, market hours filtering,
+    gap detection, multi-stock ranking, dynamic universe rescanning,
+    correlation engine, and trade journal integration.
     """
 
     def __init__(
@@ -99,13 +147,27 @@ class LiveMonitor:
         self.cache = DataCache()
         self.sector_analyzer = SectorAnalyzer()
         self._regime = "RANGE_BOUND"
-        self._universe_scanner = None
 
-    def add_position(self, symbol: str, entry_price: float, entry_date: str = ""):
+        # v3: New components
+        self.trade_journal = TradeJournal()
+        self.correlation_engine = CorrelationEngine(account_value=account_value)
+        self._universe_scanner = UniverseScanner(universe=self.symbols)
+
+        # v3: Daily loss tracking
+        self._daily_pnl = 0.0  # cumulative PnL today (percentage)
+        self._defense_mode = False
+        self._last_trading_day = None
+
+        # v3: Universe rescan tracking
+        self._last_universe_scan = 0  # timestamp of last scan
+        self._universe_scan_interval = UNIVERSE_RESCAN_INTERVAL * 60
+
+    def add_position(self, symbol: str, entry_price: float, entry_date: str = "",
+                     shares: int = 0):
         """Mark a stock as already bought at a given price."""
         if not entry_date:
             entry_date = datetime.now().strftime("%Y-%m-%d")
-        pos = Position(symbol, entry_price, entry_date)
+        pos = Position(symbol, entry_price, entry_date, total_shares=shares)
         # Set initial SL
         pos.stop_loss = compute_initial_sl(entry_price, entry_price * 0.015)
         self.positions[symbol] = pos
@@ -128,11 +190,12 @@ class LiveMonitor:
         os_signal.signal(os_signal.SIGTERM, shutdown)
 
         print(f"\n{'='*70}")
-        print(f"  LIVE STOCK MONITOR v2 — QUANT ENGINE")
+        print(f"  LIVE STOCK MONITOR v3 — QUANT ENGINE")
         print(f"  Watching: {', '.join(self.symbols[:10])}"
               f"{'...' if len(self.symbols) > 10 else ''}")
         print(f"  Refresh interval: {self.interval // 60} minutes")
         print(f"  Account value: ₹{self.account_value:,.0f}")
+        print(f"  Defense mode: {'ON' if self._defense_mode else 'OFF'}")
         print(f"  Press Ctrl+C to stop")
         print(f"{'='*70}")
 
@@ -168,9 +231,20 @@ class LiveMonitor:
         print(f"  Scan #{self._cycle_count} at {now}")
         print(f"{'─'*70}")
 
+        # --- v3: Reset daily PnL at start of new trading day ---
+        self._check_daily_reset()
+
+        # --- v3: Defense mode status ---
+        if self._defense_mode:
+            print(f"  ⚠️  DEFENSE MODE ACTIVE — daily loss limit hit ({self._daily_pnl:.1f}%)")
+            print(f"      No new BUY signals will be generated.")
+
         # Refresh intraday data
         self.cache.refresh_intraday(self.symbols)
         self.cache.refresh_daily_if_needed(self.symbols)
+
+        # --- v3: Dynamic universe rescanning ---
+        self._maybe_rescan_universe()
 
         # Classify regime from daily data (use first symbol with data)
         for sym in self.symbols:
@@ -184,7 +258,15 @@ class LiveMonitor:
                 break
 
         weight_table = get_weight_table(self._regime)
-        print(f"  Market Regime: {self._regime}")
+        regime_status = f"  Market Regime: {self._regime}"
+        if is_in_transition():
+            regime_status += " (transitioning)"
+        print(regime_status)
+
+        # --- v3: Market hours check ---
+        market_hours_status = self._get_market_hours_status()
+        if market_hours_status:
+            print(f"  {market_hours_status}")
 
         results = []
         for symbol in self.symbols:
@@ -196,8 +278,128 @@ class LiveMonitor:
                 print(f"\n  [{symbol}] Error: {e}")
                 results.append({"symbol": symbol, "error": str(e)})
 
-        self._print_summary(results)
+        # --- v3: Multi-stock ranking ---
+        self._print_ranked_summary(results)
+
+        # --- v3: Trade journal summary ---
+        journal_summary = self.trade_journal.get_summary_text()
+        if journal_summary:
+            print(f"\n{journal_summary}")
+
         return results
+
+    # ------------------------------------------------------------------
+    # v3: Daily Loss Limit / Defense Mode
+    # ------------------------------------------------------------------
+
+    def _check_daily_reset(self):
+        """Reset daily PnL tracking at start of a new trading day."""
+        today = datetime.now().date()
+        if self._last_trading_day != today:
+            self._daily_pnl = 0.0
+            self._defense_mode = False
+            self._last_trading_day = today
+
+    def _update_daily_pnl(self, pnl_pct: float):
+        """Add a realized P&L to daily tracking and check defense trigger."""
+        self._daily_pnl += pnl_pct
+        if self._daily_pnl <= -(DAILY_LOSS_LIMIT * 100):
+            if not self._defense_mode:
+                print(f"\n  🛑 DEFENSE MODE ACTIVATED — Daily loss: {self._daily_pnl:.1f}%")
+                print(f"     All new BUY signals suppressed. Trailing stops tightened.")
+            self._defense_mode = True
+
+    # ------------------------------------------------------------------
+    # v3: Market Hours Filtering
+    # ------------------------------------------------------------------
+
+    def _get_market_hours_status(self) -> str:
+        """Check if current time is in a restricted trading window."""
+        try:
+            now = now_ist()
+            current_time = now.time()
+        except Exception:
+            return ""
+
+        open_buffer_end = dt_time(
+            MARKET_OPEN.hour,
+            MARKET_OPEN.minute + MARKET_OPEN_BUFFER_MINUTES,
+        )
+        close_buffer_start = dt_time(
+            MARKET_CLOSE.hour,
+            MARKET_CLOSE.minute - MARKET_CLOSE_BUFFER_MINUTES,
+        )
+
+        if current_time < open_buffer_end:
+            return "🕐 Opening buffer — BUY signals suppressed (volatility)"
+        if current_time >= close_buffer_start:
+            return "🕐 Closing buffer — only exit/SL signals allowed"
+        return ""
+
+    def _is_buy_suppressed(self) -> bool:
+        """Check if BUY signals should be suppressed due to time or defense mode."""
+        if self._defense_mode:
+            return True
+
+        try:
+            now = now_ist()
+            current_time = now.time()
+        except Exception:
+            return False
+
+        # Opening buffer
+        open_buffer_end = dt_time(
+            MARKET_OPEN.hour,
+            MARKET_OPEN.minute + MARKET_OPEN_BUFFER_MINUTES,
+        )
+        if current_time < open_buffer_end:
+            return True
+
+        # Closing buffer
+        close_buffer_start = dt_time(
+            MARKET_CLOSE.hour,
+            MARKET_CLOSE.minute - MARKET_CLOSE_BUFFER_MINUTES,
+        )
+        if current_time >= close_buffer_start:
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # v3: Dynamic Universe Rescanning
+    # ------------------------------------------------------------------
+
+    def _maybe_rescan_universe(self):
+        """Periodically rescan the universe for new opportunities."""
+        now = datetime.now().timestamp()
+        if now - self._last_universe_scan < self._universe_scan_interval:
+            return
+
+        self._last_universe_scan = now
+        try:
+            # Use cached daily data for lightweight scan
+            daily_cache = {
+                sym: self.cache.get_daily(sym) for sym in self._universe_scanner.universe
+            }
+            new_symbols = self._universe_scanner.scan_lightweight(daily_cache)
+
+            # Add newly discovered symbols to monitoring list
+            added = []
+            for sym in new_symbols:
+                if sym not in self.symbols:
+                    self.symbols.append(sym)
+                    added.append(sym)
+                    # Warm cache for new symbol
+                    self.cache.warm_cache([sym])
+
+            if added:
+                print(f"  [Universe] Added {len(added)} new symbols: {', '.join(added[:5])}")
+        except Exception as e:
+            print(f"  [Universe] Rescan error: {e}")
+
+    # ------------------------------------------------------------------
+    # Core Analysis
+    # ------------------------------------------------------------------
 
     def _analyze_symbol(self, symbol: str, weight_table: dict) -> dict:
         """Analyze a single stock using the full MTF quant pipeline."""
@@ -274,6 +476,9 @@ class LiveMonitor:
         prev_close = float(prev["close"])
         day_change_pct = round(((current_price - prev_close) / prev_close) * 100, 2)
 
+        # --- v3: Gap detection ---
+        gap_status = self._detect_gap(day_change_pct)
+
         # Entry quality
         near_support = False
         near_fib_618 = False
@@ -294,6 +499,7 @@ class LiveMonitor:
             entry_quality=entry_quality, rsi=rsi, cmf=cmf,
             supertrend_dir=supertrend_dir, psar=psar, atr=atr,
             pivots=pivots, div_summary=div_summary, owned=owned,
+            gap_status=gap_status, rvol=rvol,
         )
 
         # Update position if owned
@@ -317,6 +523,7 @@ class LiveMonitor:
             "squeeze_fire": bool(squeeze_fire),
             "owned": owned,
             "recommendation": recommendation,
+            "gap_status": gap_status,
         }
 
         if pivots:
@@ -330,12 +537,31 @@ class LiveMonitor:
             result["trailing_stop"] = pos.trailing_stop
             result["sl_phase"] = pos.phase
             result["highest_since_entry"] = pos.highest_since_entry
+            result["lots_remaining"] = pos.lots_remaining
+            result["r_multiple"] = pos.r_multiple(current_price)
 
         return result
+
+    # ------------------------------------------------------------------
+    # v3: Gap Detection
+    # ------------------------------------------------------------------
+
+    def _detect_gap(self, day_change_pct: float) -> str:
+        """Detect gap-up or gap-down conditions."""
+        if day_change_pct > GAP_THRESHOLD_PCT:
+            return "GAP_UP"
+        elif day_change_pct < -GAP_THRESHOLD_PCT:
+            return "GAP_DOWN"
+        return "NORMAL"
+
+    # ------------------------------------------------------------------
+    # Recommendation Engine
+    # ------------------------------------------------------------------
 
     def _build_recommendation(
         self, *, symbol, price, normalized_score, entry_quality,
         rsi, cmf, supertrend_dir, psar, atr, pivots, div_summary, owned,
+        gap_status="NORMAL", rvol=1.0,
     ) -> dict:
         """Build recommendation using the normalized MTF score."""
         action = "HOLD"
@@ -346,9 +572,10 @@ class LiveMonitor:
         if owned:
             pos = self.positions[symbol]
             pnl = pos.pnl_at(price)
+            r_mult = pos.r_multiple(price)
 
-            # Check exit triggers
-            should_exit, exit_reasons = check_exit_triggers(
+            # Check exit triggers using weighted scoring
+            should_exit, exit_score, exit_reasons = compute_exit_score(
                 rsi_15m=rsi,
                 supertrend_dir_15m=supertrend_dir,
                 cmf=cmf,
@@ -358,22 +585,68 @@ class LiveMonitor:
                 divergence_direction=div_summary["direction"],
             )
 
+            # --- STOP-LOSS HIT ---
             if price <= pos.trailing_stop and pos.trailing_stop > 0:
                 action = "SELL NOW"
                 confidence = "HIGH"
                 reasons.append(f"Price hit trailing stop ({pos.trailing_stop:.2f})")
+                # Log to journal
+                self.trade_journal.log_exit(
+                    symbol=symbol, exit_price=price, reason="Stop-loss hit"
+                )
+                self._update_daily_pnl(pnl)
 
+            # --- v3: PARTIAL EXITS (scaling out) ---
+            elif pos.lots_remaining > 1 and r_mult >= 2.0 and pos.lots_remaining == pos.lots_initial - 1:
+                # 2R profit — sell second lot
+                shares_to_sell = pos.shares_for_partial()
+                action = f"SELL 1/{pos.lots_initial} (Book 2R Profit)"
+                confidence = "HIGH"
+                reasons.append(f"At {r_mult:.1f}R profit — scaling out 2nd lot")
+                reasons.append(f"Sell {shares_to_sell} shares, keep {pos.lots_remaining - 1} lot(s)")
+                risk_notes.append(f"Let remaining lot ride with trailing stop")
+                pos.record_partial_exit(shares_to_sell)
+                self.trade_journal.log_partial_exit(
+                    symbol=symbol, exit_price=price,
+                    shares_sold=shares_to_sell, reason="2R partial exit"
+                )
+
+            elif pos.lots_remaining > 1 and r_mult >= 1.0 and pos.lots_remaining == pos.lots_initial:
+                # 1R profit — sell first lot
+                shares_to_sell = pos.shares_for_partial()
+                action = f"SELL 1/{pos.lots_initial} (Book Partial Profit)"
+                confidence = "HIGH"
+                reasons.append(f"At {r_mult:.1f}R profit — scaling out 1st lot")
+                reasons.append(f"Sell {shares_to_sell} shares, keep {pos.lots_remaining - 1} lot(s)")
+                risk_notes.append(f"Move SL to breakeven on remaining lots")
+                pos.record_partial_exit(shares_to_sell)
+                self.trade_journal.log_partial_exit(
+                    symbol=symbol, exit_price=price,
+                    shares_sold=shares_to_sell, reason="1R partial exit"
+                )
+
+            # --- EXIT TRIGGERS (weighted scoring) ---
             elif should_exit and pnl > 0:
                 action = "SELL (Book Profit)"
                 confidence = "HIGH"
+                reasons.append(f"Exit score: {exit_score:.2f} ≥ {EXIT_SCORE_THRESHOLD}")
                 reasons.extend(exit_reasons)
                 reasons.append(f"P&L: +{pnl:.1f}%")
+                self.trade_journal.log_exit(
+                    symbol=symbol, exit_price=price, reason="Exit triggers"
+                )
+                self._update_daily_pnl(pnl)
 
             elif should_exit and pnl < -5:
                 action = "SELL (Cut Loss)"
                 confidence = "HIGH"
+                reasons.append(f"Exit score: {exit_score:.2f}")
                 reasons.extend(exit_reasons)
                 reasons.append(f"P&L: {pnl:.1f}%")
+                self.trade_journal.log_exit(
+                    symbol=symbol, exit_price=price, reason="Cut loss"
+                )
+                self._update_daily_pnl(pnl)
 
             elif normalized_score < -0.30:
                 action = "SELL"
@@ -385,6 +658,8 @@ class LiveMonitor:
                 confidence = "HIGH"
                 reasons.append("Trend still positive — let winner run")
                 reasons.append(f"Trailing SL: {pos.trailing_stop:.2f} (Phase: {pos.phase})")
+                if pos.lots_remaining < pos.lots_initial:
+                    reasons.append(f"Scaled out {pos.lots_initial - pos.lots_remaining}/{pos.lots_initial} lots")
 
             else:
                 action = "HOLD"
@@ -392,33 +667,101 @@ class LiveMonitor:
                 reasons.append(f"No strong exit signal (MTF: {normalized_score:.2f})")
                 reasons.append(f"Watch SL at {pos.trailing_stop:.2f}")
 
-            risk_notes.append(f"Entry: {pos.entry_price:.2f} | P&L: {pnl:+.1f}%")
+            risk_notes.append(f"Entry: {pos.entry_price:.2f} | P&L: {pnl:+.1f}% | R: {r_mult:+.1f}")
             risk_notes.append(f"SL Phase: {pos.phase} | SL: {pos.trailing_stop:.2f}")
+            if pos.lots_remaining < pos.lots_initial:
+                risk_notes.append(f"Lots: {pos.lots_remaining}/{pos.lots_initial} remaining")
 
         else:
             # NOT OWNED — should we buy?
             rec = score_to_recommendation(normalized_score)
             sl_price = compute_initial_sl(price, atr)
 
-            if "STRONG BUY" in rec and entry_quality >= 50:
+            # --- v3: R:R Gate ---
+            rr_passes, rr_ratio, rr_reason = check_rr_gate(
+                entry=price, sl=sl_price,
+                pivot_r3=pivots.get("r3", 0) if pivots else 0,
+            )
+
+            # --- v3: BUY suppression checks ---
+            buy_suppressed = self._is_buy_suppressed()
+            suppress_reason = ""
+            if self._defense_mode:
+                suppress_reason = f"Defense mode active (daily PnL: {self._daily_pnl:.1f}%)"
+            elif buy_suppressed:
+                suppress_reason = "Market hours buffer — BUY suppressed"
+
+            # --- v3: Gap detection override ---
+            if gap_status == "GAP_UP" and "BUY" in rec:
+                action = "WAIT"
+                confidence = "MEDIUM"
+                reasons.append(f"Gap-up detected (+{abs(price - float(self.cache.get_daily(symbol).iloc[-2]['close']) if not self.cache.get_daily(symbol).empty else 0):.1f}%)")
+                reasons.append("Wait for gap-fill retracement before entering")
+                risk_notes.append(f"Gap threshold: {GAP_THRESHOLD_PCT}%")
+
+            elif gap_status == "GAP_DOWN" and "BUY" in rec:
+                # Gap down — require extra confirmation
+                if not (rsi < 30 and div_summary["direction"] == "BULLISH"):
+                    action = "WAIT"
+                    confidence = "LOW"
+                    reasons.append("Gap-down — potential trap")
+                    reasons.append("Need RSI < 30 + bullish divergence to enter")
+
+            elif buy_suppressed and "BUY" in rec:
+                action = "WATCHLIST"
+                confidence = "LOW"
+                reasons.append(suppress_reason)
+                reasons.append(f"Signal is positive ({normalized_score:.2f}) — monitor for entry after buffer")
+
+            elif not rr_passes and "BUY" in rec:
+                action = "WATCHLIST"
+                confidence = "LOW"
+                reasons.append(rr_reason)
+                reasons.append(f"Signal is positive ({normalized_score:.2f}) but R:R insufficient")
+
+            elif "STRONG BUY" in rec and entry_quality >= 50:
+                # --- v3: Regime-adaptive position sizing ---
+                regime_risk = get_regime_risk_pct(self._regime)
+                shares = compute_position_size(self.account_value, price, sl_price, risk_pct=regime_risk)
+
+                # --- v3: Correlation check ---
+                existing_syms = list(self.positions.keys())
+                daily_data = {s: self.cache.get_daily(s) for s in existing_syms + [symbol]}
+                shares, corr_note = self.correlation_engine.get_position_size_adjustment(
+                    symbol, existing_syms, daily_data, shares
+                )
+
                 action = "BUY"
                 confidence = "HIGH"
                 reasons.append(f"Strong MTF score: {normalized_score:.2f}")
                 reasons.append(f"Entry quality: {entry_quality}/100")
+                reasons.append(f"R:R ratio: {rr_ratio:.1f}")
                 if div_summary["direction"] == "BULLISH":
                     reasons.append(f"Bullish divergence confirmed ({div_summary['count']} indicators)")
                 reasons.append(f"Set SL at {sl_price:.2f}")
-                shares = compute_position_size(self.account_value, price, sl_price)
-                risk_notes.append(f"Suggested size: {shares} shares (2% risk)")
+                risk_notes.append(f"Suggested: {shares} shares ({regime_risk*100:.1f}% risk, {self._regime})")
+                if corr_note:
+                    risk_notes.append(corr_note)
 
             elif "BUY" in rec and entry_quality >= 50:
+                regime_risk = get_regime_risk_pct(self._regime)
+                shares = compute_position_size(self.account_value, price, sl_price, risk_pct=regime_risk)
+
+                existing_syms = list(self.positions.keys())
+                daily_data = {s: self.cache.get_daily(s) for s in existing_syms + [symbol]}
+                shares, corr_note = self.correlation_engine.get_position_size_adjustment(
+                    symbol, existing_syms, daily_data, shares
+                )
+
                 action = "BUY"
                 confidence = "MEDIUM"
                 reasons.append(f"Moderate MTF score: {normalized_score:.2f}")
                 reasons.append(f"Entry quality: {entry_quality}/100")
+                reasons.append(f"R:R ratio: {rr_ratio:.1f}")
                 reasons.append(f"Set SL at {sl_price:.2f}")
-                shares = compute_position_size(self.account_value, price, sl_price)
-                risk_notes.append(f"Suggested size: {shares} shares (2% risk)")
+                risk_notes.append(f"Suggested: {shares} shares ({regime_risk*100:.1f}% risk, {self._regime})")
+                if corr_note:
+                    risk_notes.append(corr_note)
 
             elif "BUY" in rec and entry_quality < 50:
                 action = "WATCHLIST"
@@ -451,6 +794,10 @@ class LiveMonitor:
             "risk_notes": risk_notes,
         }
 
+    # ------------------------------------------------------------------
+    # Display
+    # ------------------------------------------------------------------
+
     def _print_recommendation(self, result: dict):
         """Print a single stock recommendation in user-friendly format."""
         if "error" in result:
@@ -467,8 +814,13 @@ class LiveMonitor:
         print(f"\n  {sym}  ({result.get('sector', '')})")
         print(f"  {'─'*55}")
         print(f"  Price: {price:.2f}  ({change_icon}{change:.2f}%)")
+
+        # Gap status
+        gap = result.get("gap_status", "NORMAL")
+        gap_str = f"  |  ⚡ {gap}" if gap != "NORMAL" else ""
+
         print(f"  Regime: {result['regime']}  |  MTF Score: {result['mtf_score']:.3f}"
-              f"  |  Quality: {result['entry_quality']}/100")
+              f"  |  Quality: {result['entry_quality']}/100{gap_str}")
         print(f"  RSI: {result['rsi']}  |  ADX: {result['adx']}"
               f"  |  RVOL: {result['rvol']:.1f}x  |  CMF: {result['cmf']:.3f}")
         print(f"  Supertrend: {result['supertrend']}"
@@ -477,8 +829,10 @@ class LiveMonitor:
 
         if result.get("owned"):
             print(f"  OWNED @ {result['entry_price']:.2f}  |  P&L: {result['pnl_pct']:+.1f}%"
+                  f"  |  R: {result.get('r_multiple', 0):+.1f}"
                   f"  |  SL Phase: {result.get('sl_phase', 'N/A')}")
-            print(f"  Trailing Stop: {result.get('trailing_stop', 0):.2f}")
+            print(f"  Trailing Stop: {result.get('trailing_stop', 0):.2f}"
+                  f"  |  Lots: {result.get('lots_remaining', '?')}/{SCALING_LOTS}")
 
         print(f"\n  >> {action.upper()}  (Confidence: {conf})")
         for reason in rec["reasons"]:
@@ -486,8 +840,12 @@ class LiveMonitor:
         for note in rec["risk_notes"]:
             print(f"     * {note}")
 
-    def _print_summary(self, results: list[dict]):
-        """Print end-of-cycle summary."""
+    # ------------------------------------------------------------------
+    # v3: Multi-Stock Ranking
+    # ------------------------------------------------------------------
+
+    def _print_ranked_summary(self, results: list[dict]):
+        """Print end-of-cycle summary with ranked BUY signals."""
         valid = [r for r in results if "error" not in r]
         buys = [r for r in valid if r["recommendation"]["action"].startswith("BUY")]
         sells = [r for r in valid if "SELL" in r["recommendation"]["action"]]
@@ -495,13 +853,35 @@ class LiveMonitor:
         watchlist = [r for r in valid if r["recommendation"]["action"] == "WATCHLIST"]
 
         print(f"\n  {'='*55}")
-        print(f"  SUMMARY: {len(valid)} stocks  |  Regime: {self._regime}")
+        print(f"  SUMMARY: {len(valid)} stocks  |  Regime: {self._regime}"
+              f"{'  ⚠️ DEFENSE' if self._defense_mode else ''}")
 
         if buys:
-            buy_syms = ", ".join(
-                f"{r['symbol']}({r['mtf_score']:.2f})" for r in buys
+            # --- v3: Rank BUYs by composite score ---
+            ranked_buys = sorted(
+                buys,
+                key=lambda r: r["mtf_score"] * r["entry_quality"] / 100.0,
+                reverse=True,
             )
-            print(f"  🟢 BUY:       {buy_syms}")
+
+            print(f"\n  🟢 BUY (Ranked by priority):")
+            total_capital = self.account_value
+            alloc_pcts = [0.40, 0.35, 0.25]  # Top 3 allocation
+
+            for i, r in enumerate(ranked_buys[:3]):
+                composite = r["mtf_score"] * r["entry_quality"] / 100.0
+                alloc = alloc_pcts[i] if i < len(alloc_pcts) else 0
+                alloc_amount = total_capital * alloc
+                print(f"     #{i+1} {r['symbol']} "
+                      f"(MTF: {r['mtf_score']:.2f}, "
+                      f"Quality: {r['entry_quality']}, "
+                      f"Composite: {composite:.3f}) "
+                      f"→ Alloc: {alloc*100:.0f}% (₹{alloc_amount:,.0f})")
+
+            if len(ranked_buys) > 3:
+                remaining = ", ".join(r["symbol"] for r in ranked_buys[3:])
+                print(f"     Also positive: {remaining}")
+
         if sells:
             sell_syms = ", ".join(r["symbol"] for r in sells)
             print(f"  🔴 SELL:      {sell_syms}")
@@ -515,6 +895,11 @@ class LiveMonitor:
         holds = len(valid) - len(buys) - len(sells) - len(avoids) - len(watchlist)
         if holds > 0:
             print(f"  ⏸️  HOLD/WAIT: {holds} stocks")
+
+        # Daily PnL summary
+        if self._daily_pnl != 0:
+            pnl_icon = "📈" if self._daily_pnl > 0 else "📉"
+            print(f"\n  {pnl_icon} Daily P&L: {self._daily_pnl:+.1f}%")
 
         next_time = datetime.now().timestamp() + self.interval
         next_str = datetime.fromtimestamp(next_time).strftime("%H:%M:%S")
