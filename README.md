@@ -7,10 +7,22 @@ AI-powered Indian stock market trading bot that combines technical analysis, new
 - **Indian Market Data** - Real-time and historical data for NSE/BSE stocks via yfinance (free, no API key needed)
 - **23 Technical Indicators** - RSI, MACD, Bollinger Bands, EMA, ATR, ADX, VWAP, Supertrend, Ichimoku Cloud, CMF, MFI, Keltner Channels, Pivot Points, Fibonacci, Parabolic SAR, OBV, Stochastic RSI, Williams %R, ROC, and more
 - **15-Minute Intraday Scanning** - Multi-timeframe confluence engine (15m entries + daily trend context) with regime-adaptive signal scoring
-- **4-Regime Market Classification** - Trending Up/Down, Range-Bound, Volatile — each with optimized signal weights
+- **4-Regime Market Classification** - Trending Up/Down, Range-Bound, Volatile — each with optimized signal weights and 3-candle transition smoothing
 - **Divergence Detection** - RSI, MACD, OBV divergence engine for early reversal spotting
 - **Dynamic Universe Scanning** - NIFTY 200 pre-screen for breakout candidates using volume, price, and relative strength filters
-- **Adaptive Risk Management** - 4-phase stop-loss (initial → breakeven → trailing + SAR → exit triggers), entry quality gating, 2% risk-based position sizing
+- **Persistent Portfolio Management** - Track your holdings (qty, price, SL, target) in `data/portfolio.json`; auto-loaded by scan/monitor commands
+- **Hedge-Fund-Grade Risk Management**:
+  - 4-phase adaptive stop-loss (initial → breakeven → trailing + SAR → weighted exit scoring)
+  - Partial exits / scaling out (sell in thirds at 1R, 2R, trail remainder)
+  - R:R minimum gate (blocks trades below 2:1 risk-reward)
+  - Regime-adaptive position sizing (2.5% in uptrends, 1% in downtrends)
+  - Daily loss limit enforcement (defense mode blocks new BUYs after 4% daily loss)
+  - Correlation-aware sizing (halves position if correlation > 0.70 with existing holdings)
+  - Portfolio VaR at 95% confidence, drawdown circuit breaker at 8%
+- **Trade Journal & Analytics** - Persistent trade log with win rate, expectancy, Sharpe ratio, max drawdown, and adaptive risk sizing
+- **Market Hours Filtering** - Suppresses BUY signals during opening/closing market buffers (first/last 15 min)
+- **Gap Detection** - Detects gap-up/down > 3% and adjusts recommendations (wait for retracement / require extra confirmation)
+- **Multi-Stock Ranking** - Ranks all BUY signals by composite score, allocates capital proportionally (40/35/25%) to top 3
 - **Sector Rotation Analysis** - Relative strength vs NIFTY 50, sector phase classification, portfolio-level exposure limits
 - **News Sentiment** - Financial news analysis from Google News RSS and NewsAPI with VADER-based sentiment scoring
 - **Social Media Trends** - Reddit sentiment from Indian stock subreddits with ticker extraction
@@ -21,9 +33,12 @@ AI-powered Indian stock market trading bot that combines technical analysis, new
 
 ```
 tradesignal-lens/
-├── main.py                           # CLI entry point (11 commands)
+├── main.py                           # CLI entry point (12 commands + portfolio CRUD)
 ├── requirements.txt                  # Python dependencies
 ├── .env.example                      # Environment config template
+├── data/
+│   ├── portfolio.json                # Persistent portfolio (auto-created)
+│   └── trade_journal.json            # Trade log with performance metrics
 ├── src/
 │   ├── settings.py                   # Config: NIFTY 200 universe, sector map, risk params
 │   ├── fetch_data.py                 # yfinance data fetcher
@@ -36,12 +51,14 @@ tradesignal-lens/
 │   │   └── data_cache.py             # In-memory DataFrame cache (daily + 15m)
 │   │
 │   ├── quant/
-│   │   ├── live_monitor.py           # Live monitoring engine (15m + MTF)
+│   │   ├── live_monitor.py           # Live monitoring engine v3 (15m + MTF)
 │   │   ├── universe_scanner.py       # Dynamic NIFTY 200 stock discovery
 │   │   ├── divergence_detector.py    # RSI/MACD/OBV divergence engine
-│   │   ├── regime_classifier.py      # 4-regime market classification
-│   │   ├── risk_manager.py           # Adaptive SL/TP/position sizing
-│   │   └── sector_analyzer.py        # Relative strength + sector rotation
+│   │   ├── regime_classifier.py      # 4-regime classification + transition smoothing
+│   │   ├── risk_manager.py           # Weighted exit scoring, R:R gate, adaptive sizing
+│   │   ├── sector_analyzer.py        # Relative strength + sector rotation
+│   │   ├── trade_journal.py          # Trade log, performance analytics, adaptive risk
+│   │   └── correlation_engine.py     # Portfolio correlation, VaR, drawdown breaker
 │   │
 │   ├── news/
 │   │   ├── news_fetcher.py           # Google News RSS + NewsAPI
@@ -52,7 +69,8 @@ tradesignal-lens/
 │   │   ├── llm_analyzer.py           # Claude/GPT powered stock analysis
 │   │   └── signal_combiner.py        # Multi-source signal fusion
 │   ├── portfolio/
-│   │   └── budget_advisor.py         # Budget-based portfolio suggestions
+│   │   ├── budget_advisor.py         # Budget-based portfolio suggestions
+│   │   └── portfolio_manager.py      # Persistent portfolio CRUD + P&L tracking
 │   ├── web/
 │   │   ├── app.py                    # Flask web application
 │   │   ├── templates/index.html      # Budget advisor UI
@@ -108,16 +126,27 @@ python main.py analyze RELIANCE.NS
 python main.py watchlist
 python main.py watchlist --symbols "TCS.NS,INFY.NS,SBIN.NS"
 
-# One-shot full quant scan (15m + daily MTF)
+# ─── Portfolio Management ─────────────────────────────────────
+# Your portfolio is saved to data/portfolio.json and auto-loaded
+# by scan/monitor commands.
+python main.py portfolio                                        # view portfolio with live P&L
+python main.py portfolio add RELIANCE.NS 10 2500.00             # add holding
+python main.py portfolio add TCS.NS 5 3800 --sl 3700 --target 4200 --notes "IT bet"
+python main.py portfolio update TCS.NS --qty 10 --sl 3650       # update fields
+python main.py portfolio remove RELIANCE.NS                     # remove holding
+python main.py portfolio set-account 500000                     # set account value
+
+# ─── One-shot Quant Scan (15m + daily MTF) ────────────────────
+# Auto-loads your portfolio — owned stocks get HOLD/SELL/partial exit advice
 python main.py scan                                             # scan default watchlist
 python main.py scan --symbols "RELIANCE.NS,TCS.NS,INFY.NS"    # custom symbols
 python main.py scan --universe                                  # NIFTY 200 dynamic discovery
 python main.py scan --account 500000                            # custom account for sizing
 
-# Live monitoring (the main feature!)
+# ─── Live Monitoring (the main feature!) ──────────────────────
+# Auto-loads portfolio, tracks P&L, suggests partial exits
 python main.py monitor                                          # monitor every 15 min
 python main.py monitor --symbols "RELIANCE.NS,TCS.NS" --interval 30
-python main.py monitor --positions "RELIANCE.NS@2500,TCS.NS@3800"
 python main.py monitor --once                                   # single scan, no loop
 
 # Daily market brief
@@ -400,36 +429,54 @@ if cmf > 0:                                              +10
 
 ---
 
-## 7. Adaptive Stop-Loss & Position Sizing
+## 7. Adaptive Stop-Loss, Exit Scoring & Position Sizing
 
-### Four-Phase SL/TP System
+### Four-Phase SL/TP System with Partial Exits
 
 ```mermaid
 graph LR
-    A["Entry"] --> B["Phase 1: Initial SL<br/>= Entry - 1.5×ATR(15m)"]
+    A["Entry<br/>(3 lots)"] --> B["Phase 1: Initial SL<br/>= Entry - 1.5×ATR(15m)"]
     B --> C{"P&L ≥ +1R?"}
-    C -->|Yes| D["Phase 2: Breakeven SL<br/>= Entry Price"]
+    C -->|Yes| D["Phase 2: Sell 1/3<br/>Move SL to breakeven"]
     D --> E{"P&L ≥ +2R?"}
-    E -->|Yes| F["Phase 3: Trailing SL<br/>= Max(Highest - 1×ATR,<br/>Parabolic SAR)"]
-    F --> G{"Exit Trigger?"}
-    G -->|"RSI>75 OR<br/>Supertrend flip OR<br/>Bearish divergence OR<br/>Price hits R3"| H["Phase 4: EXIT"]
+    E -->|Yes| F["Phase 3: Sell 1/3<br/>Trail remainder with SAR"]
+    F --> G{"Exit Score ≥ 0.60?"}
+    G -->|Yes| H["Phase 4: EXIT final 1/3"]
 ```
 
-**Exit Triggers** (any one fires → EXIT):
-- RSI(15m) > 75
-- Supertrend(15m) flips bearish
-- Bearish divergence detected
-- Price hits Camarilla R3/R4
-- CMF turns negative
-- Parabolic SAR crosses above price
+### Weighted Exit Scoring (replaces single-trigger exits)
 
-### Position Sizing
+Instead of exiting on any single trigger, each exit condition has a weighted score. Exit only when the **consensus score ≥ 0.60**:
+
+| Condition | Weight |
+|-----------|--------|
+| Supertrend(15m) flips bearish | 0.40 |
+| Bearish divergence | 0.35 |
+| RSI(15m) > 80 | 0.30 |
+| Parabolic SAR above price | 0.25 |
+| CMF < -0.15 | 0.20 |
+| Price at Camarilla R3 | 0.15 |
+
+### R:R Minimum Gate
+
+All BUY signals must pass a **minimum 2:1 risk-reward** check using pivot R3 as target. Trades with insufficient R:R are downgraded to WATCHLIST.
+
+### Regime-Adaptive Position Sizing
+
+| Regime | Risk Per Trade | Rationale |
+|--------|---------------|----------|
+| TRENDING_UP | 2.5% | Ride the trend |
+| RANGE_BOUND | 2.0% | Normal |
+| TRENDING_DOWN | 1.0% | Defensive |
+| VOLATILE | 1.0% | Preserve capital |
 
 ```
-risk_amount = account_value × 0.02         # 2% risk per trade
+risk_amount = account_value × regime_risk_pct
 stop_distance = entry_price - stop_loss
 shares = floor(risk_amount / stop_distance)
-max_position_value = account_value × 0.15   # never > 15% in one stock
+max_position_value = account_value × 0.15    # never > 15% in one stock
+
+# Correlation check: if new position corr > 0.70 with existing → halve shares
 ```
 
 ### Portfolio-Level Risk Controls
@@ -437,7 +484,10 @@ max_position_value = account_value × 0.15   # never > 15% in one stock
 ```
 max_open_positions    = 5
 max_sector_exposure   = 30%
-daily_loss_limit      = 4%
+daily_loss_limit      = 4%    → triggers defense mode (no new BUYs)
+max_portfolio_drawdown = 8%   → circuit breaker (pause all new trades 24h)
+max_correlation       = 0.70  → halve position if correlated with existing
+portfolio_VaR_limit   = 3%    → block trades pushing VaR above 3% of account
 ```
 
 ---
@@ -559,11 +609,21 @@ position_weight = stock_sharpe / Σ(all_stock_sharpes)
 - [x] yfinance migration (no API key needed)
 - [x] 23 advanced quant indicators
 - [x] 15-minute intraday scanning with MTF confluence
-- [x] 4-regime market classification
+- [x] 4-regime market classification with transition smoothing
 - [x] Divergence detection engine
 - [x] Dynamic NIFTY 200 universe scanning
-- [x] Adaptive 4-phase SL/TP system
+- [x] Adaptive 4-phase SL/TP system with partial exits
 - [x] Sector rotation & relative strength analysis
+- [x] Persistent portfolio management (add/remove/update holdings)
+- [x] Trade journal with performance analytics & adaptive risk
+- [x] Correlation engine (portfolio VaR, drawdown circuit breaker)
+- [x] Weighted exit scoring (consensus-based, replaces single-trigger)
+- [x] R:R minimum gate enforcement
+- [x] Regime-adaptive position sizing
+- [x] Daily loss limit with defense mode
+- [x] Market hours filtering
+- [x] Gap-up/gap-down detection
+- [x] Multi-stock ranking with capital allocation priority
 
 ## Glossary
 

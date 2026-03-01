@@ -8,6 +8,9 @@ Usage:
     python main.py watchlist                    # Scan full watchlist
     python main.py monitor                      # Live monitoring with buy/sell/SL advice
     python main.py scan                         # One-shot full quant scan (15m + daily MTF)
+    python main.py portfolio                    # View your portfolio
+    python main.py portfolio add RELIANCE.NS 10 2500
+    python main.py portfolio remove RELIANCE.NS
     python main.py brief                        # Daily market brief
     python main.py trending                     # Trending tickers on social media
     python main.py news RELIANCE.NS             # News for a stock
@@ -122,9 +125,15 @@ def cmd_scan(args):
     """One-shot full quant scan using 15m + daily MTF pipeline."""
     from quant.live_monitor import LiveMonitor
     from quant.universe_scanner import UniverseScanner
+    from portfolio.portfolio_manager import PortfolioManager
 
     account = getattr(args, 'account', DEFAULT_ACCOUNT_VALUE)
     use_universe = getattr(args, 'universe', False)
+
+    # Load portfolio to use account value
+    portfolio = PortfolioManager()
+    if portfolio.account_value and portfolio.account_value != DEFAULT_ACCOUNT_VALUE:
+        account = portfolio.account_value
 
     if use_universe:
         print("\n  Running universe pre-screen...")
@@ -139,6 +148,7 @@ def cmd_scan(args):
         symbols = args.symbols.split(",") if args.symbols else MONITOR_SYMBOLS
 
     monitor = LiveMonitor(symbols=symbols, account_value=account)
+    # Portfolio positions auto-loaded by LiveMonitor
     results = monitor.run_once()
     print(f"\n  Scan complete. {len(results)} symbols analyzed.")
 
@@ -281,6 +291,91 @@ def cmd_ui(args):
     app.run(host="0.0.0.0", port=args.port, debug=args.debug)
 
 
+def cmd_portfolio(args):
+    """Manage your stock portfolio."""
+    from portfolio.portfolio_manager import PortfolioManager
+
+    portfolio = PortfolioManager()
+    action = getattr(args, 'portfolio_action', None)
+
+    if action == 'add':
+        symbol = args.symbol
+        qty = args.qty
+        price = args.price
+        sl = getattr(args, 'sl', 0) or 0
+        target = getattr(args, 'target', 0) or 0
+        notes = getattr(args, 'notes', '') or ''
+
+        portfolio.add_holding(
+            symbol=symbol, qty=qty, avg_price=price,
+            stop_loss=sl, target=target, notes=notes,
+        )
+        invested = qty * price
+        print(f"\n  Added: {symbol} | {qty} shares @ Rs.{price:,.2f} = Rs.{invested:,.0f}")
+        if sl > 0:
+            print(f"  SL: Rs.{sl:.2f}")
+        if target > 0:
+            print(f"  Target: Rs.{target:.2f}")
+        print(f"  Total portfolio: {len(portfolio.holdings)} stocks")
+
+    elif action == 'remove':
+        symbol = args.symbol
+        if portfolio.remove_holding(symbol):
+            print(f"\n  Removed: {symbol}")
+            print(f"  Remaining: {len(portfolio.holdings)} stocks")
+        else:
+            print(f"\n  {symbol} not found in portfolio.")
+
+    elif action == 'update':
+        symbol = args.symbol
+        updates = {}
+        if args.qty is not None:
+            updates['qty'] = args.qty
+        if args.price is not None:
+            updates['avg_price'] = args.price
+        if args.sl is not None:
+            updates['stop_loss'] = args.sl
+        if args.target is not None:
+            updates['target'] = args.target
+        if args.notes is not None:
+            updates['notes'] = args.notes
+
+        if portfolio.update_holding(symbol, **updates):
+            print(f"\n  Updated: {symbol}")
+            h = portfolio.get_holding(symbol)
+            print(f"  Qty: {h['qty']} | Price: Rs.{h['avg_price']:,.2f} | "
+                  f"SL: {h.get('stop_loss', 0):.2f} | Target: {h.get('target', 0):.2f}")
+        else:
+            print(f"\n  {symbol} not found in portfolio.")
+
+    elif action == 'set-account':
+        portfolio.set_account_value(args.value)
+        print(f"\n  Account value set to Rs.{args.value:,.0f}")
+        print(f"  Invested: Rs.{portfolio.get_total_invested():,.0f}")
+        print(f"  Available: Rs.{portfolio.get_available_capital():,.0f}")
+
+    else:
+        # Default: show portfolio
+        # Optionally fetch live prices
+        current_prices = {}
+        if not portfolio.is_empty():
+            try:
+                import yfinance as yf
+                symbols = portfolio.get_symbols()
+                print("\n  Fetching live prices...")
+                for sym in symbols:
+                    try:
+                        ticker = yf.Ticker(sym)
+                        hist = ticker.history(period='1d')
+                        if not hist.empty:
+                            current_prices[sym] = float(hist['Close'].iloc[-1])
+                    except Exception:
+                        pass
+            except ImportError:
+                pass
+        portfolio.print_portfolio(current_prices=current_prices if current_prices else None)
+
+
 def _print_analysis(result: dict):
     """Pretty-print stock analysis results."""
     print(f"\n{'='*60}")
@@ -366,7 +461,13 @@ Examples:
   python main.py monitor                         # live monitor (every 15 min)
   python main.py monitor --interval 30           # custom interval
   python main.py monitor --symbols "RELIANCE.NS,TCS.NS" --once
-  python main.py monitor --positions "RELIANCE.NS@2500,TCS.NS@3800"
+  python main.py portfolio                       # view portfolio
+  python main.py portfolio add RELIANCE.NS 10 2500.00
+  python main.py portfolio add TCS.NS 5 3800 --sl 3700 --target 4200
+  python main.py portfolio remove RELIANCE.NS
+  python main.py portfolio update TCS.NS --qty 10 --sl 3650
+  python main.py portfolio set-account 500000    # set account value
+  python main.py scan                            # scan uses portfolio
   python main.py brief
   python main.py news TCS.NS --limit 20
   python main.py status
@@ -441,6 +542,36 @@ Examples:
     p_ui.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
     p_ui.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
 
+    # portfolio
+    p_portfolio = subparsers.add_parser("portfolio", help="Manage your stock portfolio")
+    portfolio_sub = p_portfolio.add_subparsers(dest="portfolio_action")
+
+    # portfolio add
+    p_pf_add = portfolio_sub.add_parser("add", help="Add a stock to portfolio")
+    p_pf_add.add_argument("symbol", help="Stock symbol (e.g. RELIANCE.NS)")
+    p_pf_add.add_argument("qty", type=int, help="Number of shares")
+    p_pf_add.add_argument("price", type=float, help="Average buy price")
+    p_pf_add.add_argument("--sl", type=float, default=0, help="Stop-loss price")
+    p_pf_add.add_argument("--target", type=float, default=0, help="Target price")
+    p_pf_add.add_argument("--notes", type=str, default="", help="Trade notes")
+
+    # portfolio remove
+    p_pf_rm = portfolio_sub.add_parser("remove", help="Remove a stock from portfolio")
+    p_pf_rm.add_argument("symbol", help="Stock symbol to remove")
+
+    # portfolio update
+    p_pf_up = portfolio_sub.add_parser("update", help="Update a holding")
+    p_pf_up.add_argument("symbol", help="Stock symbol")
+    p_pf_up.add_argument("--qty", type=int, default=None, help="New quantity")
+    p_pf_up.add_argument("--price", type=float, default=None, help="New avg price")
+    p_pf_up.add_argument("--sl", type=float, default=None, help="New stop-loss")
+    p_pf_up.add_argument("--target", type=float, default=None, help="New target")
+    p_pf_up.add_argument("--notes", type=str, default=None, help="Update notes")
+
+    # portfolio set-account
+    p_pf_acc = portfolio_sub.add_parser("set-account", help="Set total account value")
+    p_pf_acc.add_argument("value", type=float, help="Account value in Rs")
+
     args = parser.parse_args()
 
     if not args.command:
@@ -459,6 +590,7 @@ Examples:
         "status": cmd_status,
         "info": cmd_info,
         "ui": cmd_ui,
+        "portfolio": cmd_portfolio,
     }
 
     commands[args.command](args)

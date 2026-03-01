@@ -54,6 +54,7 @@ from quant.risk_manager import (
 from quant.sector_analyzer import SectorAnalyzer
 from quant.trade_journal import TradeJournal
 from quant.correlation_engine import CorrelationEngine
+from portfolio.portfolio_manager import PortfolioManager
 from quant.universe_scanner import UniverseScanner
 
 
@@ -153,6 +154,10 @@ class LiveMonitor:
         self.correlation_engine = CorrelationEngine(account_value=account_value)
         self._universe_scanner = UniverseScanner(universe=self.symbols)
 
+        # v4: Portfolio integration
+        self.portfolio = PortfolioManager()
+        self._portfolio_loaded = False
+
         # v3: Daily loss tracking
         self._daily_pnl = 0.0  # cumulative PnL today (percentage)
         self._defense_mode = False
@@ -162,16 +167,56 @@ class LiveMonitor:
         self._last_universe_scan = 0  # timestamp of last scan
         self._universe_scan_interval = UNIVERSE_RESCAN_INTERVAL * 60
 
+    def _load_portfolio_positions(self):
+        """Auto-load positions from the persistent portfolio."""
+        if self._portfolio_loaded:
+            return
+
+        self.portfolio._load()  # Refresh from disk
+
+        if self.portfolio.is_empty():
+            self._portfolio_loaded = True
+            return
+
+        # Update account value from portfolio
+        self.account_value = self.portfolio.account_value
+
+        loaded = []
+        for symbol, holding in self.portfolio.holdings.items():
+            if symbol not in self.positions:
+                self.add_position(
+                    symbol,
+                    entry_price=holding["avg_price"],
+                    shares=holding["qty"],
+                    stop_loss=holding.get("stop_loss", 0),
+                )
+                loaded.append(symbol)
+
+            # Ensure owned symbols are always monitored
+            if symbol not in self.symbols:
+                self.symbols.append(symbol)
+
+        if loaded:
+            print(f"  [Portfolio] Loaded {len(loaded)} positions: {', '.join(loaded)}")
+            print(f"  [Portfolio] Account: Rs.{self.account_value:,.0f} | "
+                  f"Invested: Rs.{self.portfolio.get_total_invested():,.0f} | "
+                  f"Available: Rs.{self.portfolio.get_available_capital():,.0f}")
+
+        self._portfolio_loaded = True
+
     def add_position(self, symbol: str, entry_price: float, entry_date: str = "",
-                     shares: int = 0):
+                     shares: int = 0, stop_loss: float = 0):
         """Mark a stock as already bought at a given price."""
         if not entry_date:
             entry_date = datetime.now().strftime("%Y-%m-%d")
         pos = Position(symbol, entry_price, entry_date, total_shares=shares)
         # Set initial SL
-        pos.stop_loss = compute_initial_sl(entry_price, entry_price * 0.015)
+        if stop_loss > 0:
+            pos.stop_loss = stop_loss
+        else:
+            pos.stop_loss = compute_initial_sl(entry_price, entry_price * 0.015)
         self.positions[symbol] = pos
-        print(f"  Position added: {symbol} @ {entry_price} on {entry_date}")
+        print(f"  Position added: {symbol} @ {entry_price} ({shares} shares) on {entry_date}")
 
     def remove_position(self, symbol: str):
         """Remove a position (after selling)."""
@@ -191,10 +236,17 @@ class LiveMonitor:
 
         print(f"\n{'='*70}")
         print(f"  LIVE STOCK MONITOR v3 — QUANT ENGINE")
+
+        # Auto-load portfolio positions
+        self._load_portfolio_positions()
+
+        owned_count = len(self.positions)
         print(f"  Watching: {', '.join(self.symbols[:10])}"
               f"{'...' if len(self.symbols) > 10 else ''}")
+        if owned_count > 0:
+            print(f"  Portfolio: {owned_count} owned positions loaded")
         print(f"  Refresh interval: {self.interval // 60} minutes")
-        print(f"  Account value: ₹{self.account_value:,.0f}")
+        print(f"  Account value: Rs.{self.account_value:,.0f}")
         print(f"  Defense mode: {'ON' if self._defense_mode else 'OFF'}")
         print(f"  Press Ctrl+C to stop")
         print(f"{'='*70}")
@@ -215,6 +267,9 @@ class LiveMonitor:
 
     def run_once(self) -> list[dict]:
         """Run a single monitoring cycle (warm cache + scan)."""
+        # Auto-load portfolio positions
+        self._load_portfolio_positions()
+
         if not self.cache.get_cached_symbols():
             print(f"\n  Warming data cache for {len(self.symbols)} symbols...")
             self.cache.warm_cache(self.symbols)
