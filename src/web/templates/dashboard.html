@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TradeSignal Lens — Dashboard</title>
+  <meta name="description" content="AI-Powered Indian Stock Market Trading Dashboard with portfolio management, watchlist, and real-time analysis.">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"></script>
+</head>
+<body>
+
+<!-- ───────── Sidebar ───────── -->
+<nav id="sidebar">
+  <div class="logo">
+    <div class="logo-icon">📈</div>
+    <span class="logo-text">TradeSignal<br><small>Lens</small></span>
+  </div>
+
+  <ul class="nav-links">
+    <li><button class="nav-btn active" data-tab="summary" onclick="switchTab('summary')">
+      <span class="nav-icon">🏠</span><span class="nav-label">Summary</span>
+    </button></li>
+    <li><button class="nav-btn" data-tab="portfolio" onclick="switchTab('portfolio')">
+      <span class="nav-icon">💼</span><span class="nav-label">Portfolio</span>
+    </button></li>
+    <li><button class="nav-btn" data-tab="watchlist" onclick="switchTab('watchlist')">
+      <span class="nav-icon">👁️</span><span class="nav-label">Watchlist</span>
+    </button></li>
+    <li><button class="nav-btn" data-tab="tracking" onclick="switchTab('tracking')">
+      <span class="nav-icon">🎯</span><span class="nav-label">Tracking</span>
+    </button></li>
+    <li><button class="nav-btn" data-tab="momentum" onclick="switchTab('momentum')">
+      <span class="nav-icon">🚀</span><span class="nav-label">Momentum</span>
+    </button></li>
+  </ul>
+
+  <div class="sidebar-footer">
+    <div id="market-badge" class="market-badge">
+      <span class="dot"></span>
+      <span class="badge-text">Loading...</span>
+    </div>
+  </div>
+</nav>
+
+<!-- ───────── Main Content ───────── -->
+<main id="main-content">
+
+  <!-- ─── Header Bar ─── -->
+  <header id="top-bar">
+    <div class="search-container">
+      <input type="text" id="symbol-search" placeholder="Search symbol (e.g. RELIANCE.NS)" autocomplete="off">
+      <div id="search-results" class="search-dropdown hidden"></div>
+    </div>
+    <div class="header-actions">
+      <button id="btn-refresh" class="btn-icon" onclick="refreshCurrentTab()" title="Refresh">🔄</button>
+      <span id="last-updated" class="muted"></span>
+    </div>
+  </header>
+
+  <!-- ─── Tab Panels ─── -->
+
+  <!-- SUMMARY -->
+  <section id="panel-summary" class="tab-panel active">
+    <div class="panel-header">
+      <h2>Dashboard Overview</h2>
+    </div>
+    <div id="summary-content" class="summary-grid">
+      <div class="loader-inline"><div class="spinner"></div> Loading summary...</div>
+    </div>
+  </section>
+
+  <!-- PORTFOLIO -->
+  <section id="panel-portfolio" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>My Portfolio</h2>
+      <button class="btn-primary" onclick="showAddToPortfolioModal()">+ Add Holding</button>
+    </div>
+    <div id="portfolio-content">
+      <div class="loader-inline"><div class="spinner"></div> Loading portfolio...</div>
+    </div>
+  </section>
+
+  <!-- WATCHLIST -->
+  <section id="panel-watchlist" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Watchlist</h2>
+      <div class="legend-bar">
+        <span class="legend-badge tier-high">🟢 Highly Recommended</span>
+        <span class="legend-badge tier-medium">🟡 Medium Reco</span>
+        <span class="legend-badge tier-low">🔴 Low Reco</span>
+      </div>
+    </div>
+    <div id="watchlist-content">
+      <div class="loader-inline"><div class="spinner"></div> Scanning watchlist...</div>
+    </div>
+  </section>
+
+  <!-- TRACKING -->
+  <section id="panel-tracking" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Tracking (Paper Trades)</h2>
+      <button class="btn-primary" onclick="showAddTrackingModal()">+ Add to Track</button>
+    </div>
+    <div id="tracking-content">
+      <div class="loader-inline"><div class="spinner"></div> Loading tracking...</div>
+    </div>
+  </section>
+
+  <!-- MOMENTUM -->
+  <section id="panel-momentum" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Momentum Stocks</h2>
+    </div>
+    <div id="momentum-content">
+      <div class="loader-inline"><div class="spinner"></div> Scanning momentum...</div>
+    </div>
+  </section>
+
+  <!-- STOCK DETAIL DRAWER -->
+  <div id="stock-drawer" class="stock-drawer hidden">
+    <div class="drawer-header">
+      <h3 id="drawer-title">Stock Detail</h3>
+      <button class="btn-icon" onclick="closeDrawer()">✕</button>
+    </div>
+    <div id="drawer-chart" class="drawer-chart"></div>
+    <div id="drawer-analysis" class="drawer-analysis"></div>
+  </div>
+
+</main>
+
+<!-- ───────── Modals ───────── -->
+<div id="modal-overlay" class="modal-overlay hidden" onclick="closeModal()">
+  <div class="modal-card" onclick="event.stopPropagation()">
+    <div class="modal-header">
+      <h3 id="modal-title">Add Stock</h3>
+      <button class="btn-icon" onclick="closeModal()">✕</button>
+    </div>
+    <div id="modal-body" class="modal-body"></div>
+  </div>
+</div>
+
+<!-- ───────── Disclaimer ───────── -->
+<div class="disclaimer">
+  <strong>Disclaimer:</strong> AI-generated analysis for educational purposes only.
+  Not financial advice. Consult a SEBI-registered advisor.
+</div>
+
+<script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
