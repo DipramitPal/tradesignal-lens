@@ -106,16 +106,20 @@ def build_static_site():
     html = html.replace("{{ url_for('static', filename='style.css') }}", "static/style.css")
     html = html.replace("{{ url_for('static', filename='app.js') }}", "static/app.js")
     
-    # Inject POST blocker
+    # Inject POST blocker + cache-busting for static JSON files
     blocker = '''
 <script>
 const originalFetch = window.fetch;
-window.fetch = async function() {
-    if (arguments[1] && arguments[1].method === 'POST') {
+window.fetch = async function(url, opts) {
+    if (opts && opts.method === 'POST') {
         alert("Editing is disabled in the static Cloud Hosted dashboard. Use the local CLI or run Flask locally to add to your portfolio/tracking.");
         return new Response(JSON.stringify({error: "read-only"}), {status: 403});
     }
-    return originalFetch.apply(this, arguments);
+    // Cache-bust all .json requests so the browser always gets fresh data
+    if (typeof url === 'string' && url.endsWith('.json')) {
+        url += (url.includes('?') ? '&' : '?') + '_t=' + Date.now();
+    }
+    return originalFetch.call(this, url, opts);
 };
 </script>
 </head>
