@@ -612,12 +612,32 @@ def create_app() -> Flask:
 
         for idx, row in df_ind.iterrows():
             ts = int(idx.timestamp()) if hasattr(idx, 'timestamp') else 0
+
+            # Safe float extraction
+            def _sf(val, default=None):
+                try:
+                    f = float(val)
+                    return default if math.isnan(f) or math.isinf(f) else f
+                except (TypeError, ValueError):
+                    return default
+
+            o, h, l, c = _sf(row.get("open")), _sf(row.get("high")), _sf(row.get("low")), _sf(row.get("close"))
+            
+            # Skip rows where OHLC data is missing completely (prevents lightweight charts crash)
+            if c is None:
+                continue
+
+            # Fallback for missing intra-day OHLC values to just the close price
+            o = o if o is not None else c
+            h = h if h is not None else c
+            l = l if l is not None else c
+
             candles.append({
                 "time": ts,
-                "open": round(float(row.get("open", 0)), 2),
-                "high": round(float(row.get("high", 0)), 2),
-                "low": round(float(row.get("low", 0)), 2),
-                "close": round(float(row.get("close", 0)), 2),
+                "open": round(o, 2),
+                "high": round(h, 2),
+                "low": round(l, 2),
+                "close": round(c, 2),
             })
             volumes.append({
                 "time": ts,
