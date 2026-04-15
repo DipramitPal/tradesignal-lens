@@ -56,6 +56,7 @@ from quant.trade_journal import TradeJournal
 from quant.correlation_engine import CorrelationEngine
 from portfolio.portfolio_manager import PortfolioManager
 from quant.universe_scanner import UniverseScanner
+from quant.breakout_manager import BreakoutManager
 
 
 class Position:
@@ -166,6 +167,9 @@ class LiveMonitor:
         # v3: Universe rescan tracking
         self._last_universe_scan = 0  # timestamp of last scan
         self._universe_scan_interval = UNIVERSE_RESCAN_INTERVAL * 60
+
+        # v4: Breakout tracking
+        self.breakout_mgr = BreakoutManager()
 
     def _load_portfolio_positions(self):
         """Auto-load positions from the persistent portfolio."""
@@ -595,6 +599,28 @@ class LiveMonitor:
             result["lots_remaining"] = pos.lots_remaining
             result["r_multiple"] = pos.r_multiple(current_price)
 
+        # --- v4: Breakout detection & dynamic SL ---
+        bo = self.breakout_mgr.check(
+            symbol, current_price, df_daily,
+            atr=atr, rvol=rvol,
+            current_sl=result.get("trailing_stop", 0),
+        )
+        result["breakout"] = bo["breakout"]
+        result["breakout_level"] = bo["level"]
+        result["pct_above_breakout"] = bo["pct_above"]
+        if bo["breakout"]:
+            result["breakout_sl"] = bo["adjusted_sl"]
+            result["breakout_phase"] = bo["phase"]
+            result["breakout_detected_at"] = bo.get("detected_at", "")
+            # Override SL for owned positions if breakout SL is tighter
+            if owned and bo["adjusted_sl"] > result.get("trailing_stop", 0):
+                result["trailing_stop"] = bo["adjusted_sl"]
+                result["sl_phase"] = "BREAKOUT_TRAIL"
+                # Persist updated SL to portfolio
+                self.portfolio.update_holding(
+                    symbol, stop_loss=bo["adjusted_sl"],
+                )
+
         return result
 
     # ------------------------------------------------------------------
@@ -889,6 +915,14 @@ class LiveMonitor:
             print(f"  Trailing Stop: {result.get('trailing_stop', 0):.2f}"
                   f"  |  Lots: {result.get('lots_remaining', '?')}/{SCALING_LOTS}")
 
+        if result.get("breakout"):
+            if result.get("owned"):
+                print(f"  \U0001F680 BREAKOUT ACTIVE  |  Level: {result.get('breakout_level', 0):.2f}"
+                      f"  |  SL tightened to: {result.get('breakout_sl', 0):.2f}")
+            else:
+                print(f"  \u26A1 BREAKOUT  |  20-day High: {result.get('breakout_level', 0):.2f}"
+                      f"  |  +{result.get('pct_above_breakout', 0):.1f}% above")
+
         print(f"\n  >> {action.upper()}  (Confidence: {conf})")
         for reason in rec["reasons"]:
             print(f"     - {reason}")
@@ -949,7 +983,20 @@ class LiveMonitor:
 
         holds = len(valid) - len(buys) - len(sells) - len(avoids) - len(watchlist)
         if holds > 0:
-            print(f"  ⏸️  HOLD/WAIT: {holds} stocks")
+            print(f"  \u23F8\uFE0F  HOLD/WAIT: {holds} stocks")
+
+        # --- v4: Breakout summary ---
+        breakouts = [r for r in valid if r.get("breakout")]
+        if breakouts:
+            bo_parts = []
+            for r in breakouts:
+                tag = r["symbol"]
+                if r.get("owned"):
+                    tag += f" (SL: {r.get('breakout_sl', r.get('trailing_stop', 0)):.2f})"
+                else:
+                    tag += f" (+{r.get('pct_above_breakout', 0):.1f}%)"
+                bo_parts.append(tag)
+            print(f"  \n  \U0001F680 BREAKOUTS: {', '.join(bo_parts)}")
 
         # Daily PnL summary
         if self._daily_pnl != 0:

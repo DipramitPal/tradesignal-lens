@@ -754,6 +754,14 @@ async function openStockDrawer(symbol) {
           <span class="analysis-label">Regime</span>
           <span class="analysis-value">${analysis.regime}</span>
         </div>
+        <div class="analysis-item" style="grid-column: 1 / -1; background: rgba(63, 185, 80, 0.1); padding: 8px;">
+          <span class="analysis-label" style="display: inline-block; width: 120px;">Breakout Status</span>
+          <span class="analysis-value ${analysis.breakout ? 'text-green' : 'text-muted'}">
+            ${analysis.breakout 
+              ? `🚀 ACTIVE (Level: ₹${analysis.breakout_level.toFixed(2)}, +${analysis.pct_above_breakout.toFixed(1)}%) — SL tightened to ₹${analysis.stop_loss.toFixed(2)}` 
+              : `No (20-day high: ₹${analysis.breakout_level.toFixed(2)})`}
+          </span>
+        </div>
       </div>
 
       <div style="margin-top:16px;display:flex;gap:8px;">

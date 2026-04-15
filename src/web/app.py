@@ -20,6 +20,17 @@ if _src_dir not in sys.path:
 from flask import Flask, render_template, request, jsonify
 import yfinance as yf
 
+
+def _sanitize_for_json(obj):
+    """Recursively replace NaN/Inf floats with None for valid JSON."""
+    if isinstance(obj, float) and (math.isnan(obj) or math.isinf(obj)):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_for_json(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple)):
+        return [_sanitize_for_json(v) for v in obj]
+    return obj
+
 from settings import (
     STOCK_SYMBOLS, SCAN_UNIVERSE, SYMBOL_SECTOR, SECTOR_MAP,
     DEFAULT_ACCOUNT_VALUE, MONITOR_SYMBOLS, SCAN_INTERVAL_MINUTES,
@@ -41,6 +52,10 @@ _last_cache_refresh: datetime | None = None
 _refresh_thread_started = False
 _IST = timezone(timedelta(hours=5, minutes=30))
 
+# Breakout tracking
+from quant.breakout_manager import BreakoutManager
+_breakout_mgr = BreakoutManager()
+
 
 def _is_market_window() -> bool:
     """True if current IST time is within market hours ± 30 min buffer."""
@@ -55,6 +70,7 @@ def _background_cache_refresh():
     """Background thread: refresh cache every SCAN_INTERVAL_MINUTES."""
     global _last_cache_refresh
     import time
+    import pandas as pd
     interval = SCAN_INTERVAL_MINUTES * 60
     print(f"  [Cache Refresh] Background refresh thread started (every {SCAN_INTERVAL_MINUTES} min)")
     while True:
@@ -65,6 +81,17 @@ def _background_cache_refresh():
             syms = list(_cache.daily_cache.keys()) or MONITOR_SYMBOLS[:20]
             print(f"  [Cache Refresh] Refreshing {len(syms)} symbols...")
             _cache.refresh_intraday(syms)
+            # Also refresh daily data so charts/watchlist reflect today's candle
+            for sym in syms:
+                df_new = DataCache._fetch(sym, period="5d", interval="1d")
+                if not df_new.empty:
+                    old = _cache.daily_cache.get(sym)
+                    if old is not None and not old.empty:
+                        combined = pd.concat([old.iloc[:-1], df_new])
+                        combined = combined[~combined.index.duplicated(keep="last")]
+                        _cache.daily_cache[sym] = combined.sort_index()
+                    else:
+                        _cache.daily_cache[sym] = df_new
             _cache.refresh_daily_if_needed(syms)
             _last_cache_refresh = datetime.now(_IST)
             print(f"  [Cache Refresh] Done at {_last_cache_refresh.strftime('%H:%M:%S')}")
@@ -76,8 +103,18 @@ def _ensure_cache(symbols: list[str] | None = None):
     """Warm cache lazily on first API call, start background refresh thread."""
     global _cache_warmed, _last_cache_refresh, _refresh_thread_started
     if not _cache_warmed:
-        syms = symbols or MONITOR_SYMBOLS[:20]
-        _cache.warm_cache(syms, daily_period="6mo", intraday_days=2)
+        _portfolio._load()
+        _tracking._load()
+        
+        # Combine explicitly passed symbols, top monitor symbols, portfolio, and tracked 
+        base_syms = symbols if symbols else MONITOR_SYMBOLS[:20]
+        portfolio_syms = list(_portfolio.holdings.keys())
+        tracked_syms = list(_tracking.get_all().keys())
+        
+        all_syms = list(set(base_syms + portfolio_syms + tracked_syms))
+        
+        print(f"  [Cache] Warming {len(all_syms)} symbols...")
+        _cache.warm_cache(all_syms, daily_period="6mo", intraday_days=2)
         _cache_warmed = True
         _last_cache_refresh = datetime.now(_IST)
 
@@ -100,13 +137,20 @@ def _safe_float(val, default=None):
 
 
 def _get_live_price(symbol: str) -> float | None:
-    """Get latest price from cache or yfinance fallback."""
+    """Get latest price: intraday cache → daily cache → yfinance fallback."""
+    # 1. Try intraday cache (most recent, refreshed every 15 min)
+    idf = _cache.get_intraday(symbol)
+    if not idf.empty:
+        p = _safe_float(idf.iloc[-1]["close"])
+        if p is not None:
+            return p
+    # 2. Fall back to daily cache
     df = _cache.get_daily(symbol)
     if not df.empty:
         p = _safe_float(df.iloc[-1]["close"])
         if p is not None:
             return p
-    # Fallback: one-shot yfinance
+    # 3. Fallback: one-shot yfinance
     try:
         t = yf.Ticker(symbol)
         hist = t.history(period="2d", interval="1d", auto_adjust=True)
@@ -464,18 +508,32 @@ def create_app() -> Flask:
 
                 df_ind = add_technical_indicators(df.copy())
                 latest = df_ind.iloc[-1]
-                price = float(latest["close"])
-                rsi = float(latest.get("rsi", 50))
-                cmf = float(latest.get("cmf", 0))
-                squeeze_fire = int(latest.get("squeeze_fire", 0))
-                atr = float(latest.get("atr", price * 0.02))
+
+                def _sf(val, fallback=0.0):
+                    v = float(val)
+                    return fallback if math.isnan(v) else v
+
+                price = _sf(latest["close"], 0)
+                if price == 0:
+                    for i in range(2, min(len(df_ind), 10)):
+                        p = _sf(df_ind.iloc[-i]["close"], 0)
+                        if p > 0:
+                            price = p
+                            break
+                if price == 0:
+                    continue
+
+                rsi = _sf(latest.get("rsi", 50), 50)
+                cmf = _sf(latest.get("cmf", 0), 0)
+                squeeze_fire = int(_sf(latest.get("squeeze_fire", 0), 0))
+                atr = _sf(latest.get("atr", price * 0.02), price * 0.02)
 
                 score = score_signals(df_ind, weight_table)
                 normalized = normalize_score(score, max_possible=0.8)
                 rec = score_to_recommendation(normalized)
 
-                vol = float(latest.get("volume", 0))
-                vol_avg = df_ind["volume"].rolling(20).mean().iloc[-1] if len(df_ind) >= 20 else vol
+                vol = _sf(latest.get("volume", 0), 0)
+                vol_avg = _sf(df_ind["volume"].rolling(20).mean().iloc[-1], vol) if len(df_ind) >= 20 else vol
                 rvol = vol / (vol_avg + 1e-10)
 
                 entry_quality = compute_entry_quality(
@@ -485,10 +543,12 @@ def create_app() -> Flask:
                 sl = compute_initial_sl(price, atr)
                 tier = _classify_recommendation(normalized, entry_quality)
 
-                prev_close = float(df_ind.iloc[-2]["close"]) if len(df_ind) > 1 else price
-                day_change = round(((price - prev_close) / prev_close) * 100, 2)
+                prev_close = _sf(df_ind.iloc[-2]["close"], price) if len(df_ind) > 1 else price
+                day_change = round(((price - prev_close) / (prev_close + 1e-10)) * 100, 2)
 
-                items.append({
+                _is_bo, _bo_lvl, _ = BreakoutManager.detect_breakout(price, df, rvol=rvol)
+
+                items.append(_sanitize_for_json({
                     "symbol": sym,
                     "price": round(price, 2),
                     "day_change_pct": day_change,
@@ -501,7 +561,9 @@ def create_app() -> Flask:
                     "rvol": round(rvol, 2),
                     "sector": SYMBOL_SECTOR.get(sym, "MISC"),
                     "squeeze_fire": bool(squeeze_fire),
-                })
+                    "breakout": _is_bo,
+                    "breakout_level": _bo_lvl,
+                }))
             except Exception:
                 continue
 
@@ -594,7 +656,7 @@ def create_app() -> Flask:
         if h:
             entry_price = h["avg_price"]
 
-        return jsonify({
+        return jsonify(_sanitize_for_json({
             "symbol": symbol,
             "candles": candles,
             "sma20": sma20,
@@ -602,7 +664,7 @@ def create_app() -> Flask:
             "volumes": volumes,
             "stop_loss": sl_value,
             "entry_price": entry_price,
-        })
+        }))
 
     # ── Stock Analysis ────────────────────────────────────────────────
 
@@ -633,13 +695,28 @@ def create_app() -> Flask:
 
             df_ind = add_technical_indicators(df.copy())
             latest = df_ind.iloc[-1]
-            price = float(latest["close"])
-            rsi = float(latest.get("rsi", 50))
-            atr = float(latest.get("atr", price * 0.02))
-            adx = float(latest.get("adx", 0))
-            cmf = float(latest.get("cmf", 0))
-            supertrend_dir = float(latest.get("supertrend_direction", 0))
-            squeeze = int(latest.get("squeeze_fire", 0))
+
+            # NaN-safe extraction: use last valid value from daily data
+            def _sf(val, fallback=0.0):
+                """Safe float — returns fallback if NaN."""
+                v = float(val)
+                return fallback if math.isnan(v) else v
+
+            # Price: walk backwards to find last valid close
+            price = _sf(latest["close"], 0)
+            if price == 0:
+                for i in range(2, min(len(df_ind), 10)):
+                    p = _sf(df_ind.iloc[-i]["close"], 0)
+                    if p > 0:
+                        price = p
+                        break
+
+            rsi = _sf(latest.get("rsi", 50), 50)
+            atr = _sf(latest.get("atr", price * 0.02), price * 0.02)
+            adx = _sf(latest.get("adx", 0), 0)
+            cmf = _sf(latest.get("cmf", 0), 0)
+            supertrend_dir = _sf(latest.get("supertrend_direction", 0), 0)
+            squeeze = int(_sf(latest.get("squeeze_fire", 0), 0))
 
             regime = classify_regime(df_ind, "RANGE_BOUND")
             wt = get_weight_table(regime)
@@ -649,20 +726,25 @@ def create_app() -> Flask:
             conf = score_to_confidence(normalized)
             sl = compute_initial_sl(price, atr)
 
-            vol = float(latest.get("volume", 0))
-            vol_avg = df_ind["volume"].rolling(20).mean().iloc[-1] if len(df_ind) >= 20 else vol
+            vol = _sf(latest.get("volume", 0), 0)
+            vol_avg = _sf(df_ind["volume"].rolling(20).mean().iloc[-1], vol) if len(df_ind) >= 20 else vol
             rvol = vol / (vol_avg + 1e-10)
             entry_quality = compute_entry_quality(price, rsi, squeeze, rvol, cmf)
 
             divs = detect_all_divergences(df_ind, lookback=50)
             div_summary = summarize_divergences(divs)
 
-            prev_close = float(df_ind.iloc[-2]["close"]) if len(df_ind) > 1 else price
-            day_change = round(((price - prev_close) / prev_close) * 100, 2)
+            prev_close = _sf(df_ind.iloc[-2]["close"], price) if len(df_ind) > 1 else price
+            day_change = round(((price - prev_close) / (prev_close + 1e-10)) * 100, 2)
 
             tier = _classify_recommendation(normalized, entry_quality)
 
-            return jsonify({
+            # Breakout detection
+            is_bo, bo_level, pct_above_bo = _breakout_mgr.detect_breakout(
+                price, df, rvol=rvol,
+            )
+
+            return jsonify(_sanitize_for_json({
                 "symbol": symbol,
                 "price": round(price, 2),
                 "day_change_pct": day_change,
@@ -682,7 +764,10 @@ def create_app() -> Flask:
                 "divergence": div_summary["direction"],
                 "sector": SYMBOL_SECTOR.get(symbol, "MISC"),
                 "tier": tier,
-            })
+                "breakout": is_bo,
+                "breakout_level": round(bo_level, 2),
+                "pct_above_breakout": round(pct_above_bo, 2),
+            }))
         except Exception as e:
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
