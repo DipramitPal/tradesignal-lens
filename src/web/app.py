@@ -744,6 +744,30 @@ def create_app() -> Flask:
                 price, df, rvol=rvol,
             )
 
+            # News & Sentiment (Background/Fast fetch)
+            news_items = []
+            news_label = "Neutral"
+            try:
+                from news.news_fetcher import NewsFetcher
+                from news.sentiment_analyzer import SentimentAnalyzer
+                nf = NewsFetcher()
+                sa = SentimentAnalyzer()
+                
+                # Fetch just 3 articles for speed
+                articles = nf.fetch_stock_news(symbol, max_results=3)
+                if articles:
+                    analysis = sa.analyze_articles(articles)
+                    news_label = analysis["overall_label"].title()
+                    for art, sent in zip(articles, analysis["article_sentiments"]):
+                        news_items.append({
+                            "title": art["title"],
+                            "url": art["url"],
+                            "source": art["source"],
+                            "sentiment": sent["label"].title()
+                        })
+            except Exception as e:
+                print(f"Error fetching news for {symbol}: {e}")
+
             return jsonify(_sanitize_for_json({
                 "symbol": symbol,
                 "price": round(price, 2),
@@ -767,6 +791,8 @@ def create_app() -> Flask:
                 "breakout": is_bo,
                 "breakout_level": round(bo_level, 2),
                 "pct_above_breakout": round(pct_above_bo, 2),
+                "news_sentiment": news_label,
+                "recent_news": news_items,
             }))
         except Exception as e:
             traceback.print_exc()

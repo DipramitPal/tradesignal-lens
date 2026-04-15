@@ -368,7 +368,7 @@ async function loadWatchlist() {
 
     const rows = items.map(item => `
       <tr onclick="openStockDrawer('${item.symbol}')">
-        <td class="sym-cell">${item.symbol.replace('.NS', '')}</td>
+        <td class="sym-cell">${item.symbol.replace('.NS', '')}${item.breakout ? ' <span title="Breakout Active" style="font-size:14px">🚀</span>' : ''}</td>
         <td><span class="tier-badge ${item.tier}">${item.tier}</span></td>
         <td>₹${item.price.toFixed(2)}</td>
         <td class="${item.day_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative'}">${item.day_change_pct >= 0 ? '+' : ''}${item.day_change_pct}%</td>
@@ -624,7 +624,7 @@ async function loadMomentum() {
     const rows = items.map((item, idx) => `
       <tr onclick="openStockDrawer('${item.symbol}')">
         <td style="color:var(--text-muted);font-weight:600;">#${idx + 1}</td>
-        <td class="sym-cell">${item.symbol.replace('.NS', '')}</td>
+        <td class="sym-cell">${item.symbol.replace('.NS', '')}${item.breakout ? ' <span title="Breakout Active" style="font-size:14px">🚀</span>' : ''}</td>
         <td>₹${item.price.toFixed(2)}</td>
         <td class="${item.day_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative'}">${item.day_change_pct >= 0 ? '+' : ''}${item.day_change_pct}%</td>
         <td style="font-weight:600;color:var(--cyan);">${item.momentum.toFixed(3)}</td>
@@ -757,13 +757,29 @@ async function openStockDrawer(symbol) {
         <div class="analysis-item" style="grid-column: 1 / -1; background: rgba(63, 185, 80, 0.1); padding: 8px;">
           <span class="analysis-label" style="display: inline-block; width: 120px;">Breakout Status</span>
           <span class="analysis-value ${analysis.breakout ? 'text-green' : 'text-muted'}">
-            ${analysis.breakout 
-              ? `🚀 ACTIVE (Level: ₹${analysis.breakout_level.toFixed(2)}, +${analysis.pct_above_breakout.toFixed(1)}%) — SL tightened to ₹${analysis.stop_loss.toFixed(2)}` 
-              : `No (20-day high: ₹${analysis.breakout_level.toFixed(2)})`}
+            ${analysis.breakout
+        ? `🚀 ACTIVE (Level: ₹${analysis.breakout_level.toFixed(2)}, +${analysis.pct_above_breakout.toFixed(1)}%) — SL tightened to ₹${analysis.stop_loss.toFixed(2)}`
+        : `No (20-day high: ₹${analysis.breakout_level.toFixed(2)})`}
           </span>
         </div>
       </div>
 
+      <div style="margin-top:24px; padding: 12px; background: rgba(13, 17, 23, 0.5); border-radius: 6px; border: 1px solid var(--border-color);">
+        <h4 style="color:var(--text-primary); margin-top: 0; margin-bottom: 8px;">Latest News & Sentiment</h4>
+        <div style="margin-bottom: 12px; font-size: 13px;"><strong>Overall Sentiment:</strong> 
+          <span class="tier-badge ${analysis.news_sentiment === 'Positive' ? 'HIGH' : analysis.news_sentiment === 'Negative' ? 'LOW' : 'MEDIUM'}" style="padding: 2px 6px;">${analysis.news_sentiment || 'Neutral'}</span>
+        </div>
+        ${analysis.recent_news && analysis.recent_news.length > 0
+        ? analysis.recent_news.map(n => `
+            <div style="margin-bottom: 10px; font-size: 13px; line-height: 1.4; border-left: 2px solid var(--border-color); padding-left: 8px;">
+              <a href="${n.url}" target="_blank" style="color:var(--cyan); text-decoration:none; display: block; margin-bottom: 2px;">${n.title}</a>
+              <span class="text-muted" style="font-size: 11px;">${n.source}</span> • 
+              <span style="font-size: 11px; color: ${n.sentiment === 'Positive' ? 'var(--green)' : n.sentiment === 'Negative' ? 'var(--red)' : 'var(--text-muted)'}">${n.sentiment}</span>
+            </div>
+          `).join('')
+        : '<div class="text-muted" style="font-size: 12px;">No recent news found.</div>'
+      }
+      </div>
       <div style="margin-top:16px;display:flex;gap:8px;">
         <button class="btn-success" onclick="quickTrack('${symbol}', ${analysis.price})">🎯 Track</button>
         <button class="btn-primary" onclick="showAddToPortfolioModalPrefilled('${symbol}', ${analysis.price})">💼 Add to Portfolio</button>
