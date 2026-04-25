@@ -818,6 +818,59 @@ def create_app() -> Flask:
             traceback.print_exc()
             return jsonify({"error": str(e)}), 500
 
+    # ── Portfolio Advisor ─────────────────────────────────────────────
+
+    @app.route("/api/portfolio/advisor")
+    def api_portfolio_advisor():
+        """All advisor outputs in one payload."""
+        try:
+            from portfolio.portfolio_advisor import PortfolioAdvisor
+            advisor = PortfolioAdvisor(portfolio=_portfolio, cache=_cache)
+            _ensure_cache()
+
+            force = request.args.get("force", "false").lower() == "true"
+
+            tsl = advisor.get_tsl_advice()
+            averaging = advisor.get_averaging_recommendations(force_override=force)
+            harvest = advisor.get_tax_harvest_recommendations()
+
+            return jsonify(_sanitize_for_json({
+                "tsl_advice": tsl,
+                "averaging_recommendations": averaging,
+                "tax_harvest": harvest,
+            }))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/portfolio/weekly-report")
+    def api_portfolio_weekly_report():
+        """Weekly portfolio performance report."""
+        try:
+            from portfolio.portfolio_advisor import PortfolioAdvisor
+            advisor = PortfolioAdvisor(portfolio=_portfolio, cache=_cache)
+            _ensure_cache()
+
+            report = advisor.generate_weekly_report()
+            return jsonify(_sanitize_for_json(report))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/portfolio/tsl")
+    def api_portfolio_tsl():
+        """Lightweight TSL advice endpoint."""
+        try:
+            from portfolio.portfolio_advisor import PortfolioAdvisor
+            advisor = PortfolioAdvisor(portfolio=_portfolio, cache=_cache)
+            _ensure_cache()
+
+            tsl = advisor.get_tsl_advice()
+            return jsonify(_sanitize_for_json({"tsl_advice": tsl}))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
     # ── Market Status (keep existing) ─────────────────────────────────
 
     @app.route("/api/market-status")

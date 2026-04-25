@@ -35,6 +35,9 @@
     <li><button class="nav-btn" data-tab="momentum" onclick="switchTab('momentum')">
       <span class="nav-icon">🚀</span><span class="nav-label">Momentum</span>
     </button></li>
+    <li><button class="nav-btn" data-tab="advisor" onclick="switchTab('advisor')">
+      <span class="nav-icon">🧠</span><span class="nav-label">Advisor</span>
+    </button></li>
   </ul>
 
   <div class="sidebar-footer">
@@ -116,6 +119,23 @@
     </div>
     <div id="momentum-content">
       <div class="loader-inline"><div class="spinner"></div> Scanning momentum...</div>
+    </div>
+  </section>
+
+  <!-- ADVISOR -->
+  <section id="panel-advisor" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Portfolio Advisor</h2>
+      <div class="legend-bar">
+        <button class="btn-secondary advisor-filter active" data-section="all" onclick="filterAdvisor('all')">All</button>
+        <button class="btn-secondary advisor-filter" data-section="tsl" onclick="filterAdvisor('tsl')">TSL</button>
+        <button class="btn-secondary advisor-filter" data-section="weekly" onclick="filterAdvisor('weekly')">Weekly</button>
+        <button class="btn-secondary advisor-filter" data-section="average" onclick="filterAdvisor('average')">Averaging</button>
+        <button class="btn-secondary advisor-filter" data-section="harvest" onclick="filterAdvisor('harvest')">Tax Harvest</button>
+      </div>
+    </div>
+    <div id="advisor-content">
+      <div class="loader-inline"><div class="spinner"></div> Loading advisor...</div>
     </div>
   </section>
 

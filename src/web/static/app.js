@@ -57,6 +57,7 @@ function switchTab(tab) {
     case 'watchlist': loadWatchlist(); break;
     case 'tracking': loadTracking(); break;
     case 'momentum': loadMomentum(); break;
+    case 'advisor': loadAdvisor(); break;
   }
 }
 
@@ -656,6 +657,257 @@ async function loadMomentum() {
   } catch (e) {
     container.innerHTML = `<div class="text-red">Error: ${e.message}</div>`;
   }
+}
+
+// ---------------------------------------------------------------------------
+// ADVISOR
+// ---------------------------------------------------------------------------
+let _advisorData = null;
+let _weeklyData = null;
+let _advisorSection = 'all';
+
+async function loadAdvisor() {
+  const container = document.getElementById('advisor-content');
+  container.innerHTML = '<div class="loader-inline"><div class="spinner"></div> Loading advisor (fetching live data)...</div>';
+
+  try {
+    const [advRes, weeklyRes] = await Promise.all([
+      fetch('/api/portfolio/advisor'),
+      fetch('/api/portfolio/weekly-report'),
+    ]);
+    _advisorData = await advRes.json();
+    _weeklyData = await weeklyRes.json();
+    renderAdvisor(_advisorSection);
+  } catch (e) {
+    container.innerHTML = `<div class="text-red">Error loading advisor: ${e.message}</div>`;
+  }
+}
+
+function filterAdvisor(section) {
+  _advisorSection = section;
+  document.querySelectorAll('.advisor-filter').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.section === section);
+  });
+  renderAdvisor(section);
+}
+
+function renderAdvisor(section) {
+  const container = document.getElementById('advisor-content');
+  if (!_advisorData && !_weeklyData) {
+    container.innerHTML = '<div class="text-muted" style="padding:40px 0;">No advisor data available.</div>';
+    return;
+  }
+
+  let html = '';
+
+  if (section === 'all' || section === 'weekly') {
+    html += renderWeeklySection();
+  }
+  if (section === 'all' || section === 'tsl') {
+    html += renderTSLSection();
+  }
+  if (section === 'all' || section === 'average') {
+    html += renderAveragingSection();
+  }
+  if (section === 'all' || section === 'harvest') {
+    html += renderHarvestSection();
+  }
+
+  container.innerHTML = html;
+}
+
+function renderWeeklySection() {
+  if (!_weeklyData || _weeklyData.error) return '';
+  const p = _weeklyData.portfolio;
+  const pnlClass = p.week_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+  const totalPnlClass = p.total_pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+
+  const gainersHtml = (_weeklyData.top_gainers || []).map(s =>
+    `<tr><td class="sym-cell">${s.name}</td><td class="pnl-positive">+${s.week_change_pct}%</td><td>Rs.${s.current_price}</td></tr>`
+  ).join('');
+
+  const losersHtml = (_weeklyData.top_losers || []).map(s =>
+    `<tr><td class="sym-cell">${s.name}</td><td class="pnl-negative">${s.week_change_pct}%</td><td>Rs.${s.current_price}</td></tr>`
+  ).join('');
+
+  const sectorHtml = (_weeklyData.sector_performance || []).map(s => {
+    const cls = s.week_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+    const sign = s.week_change_pct >= 0 ? '+' : '';
+    return `<tr><td>${s.sector}</td><td class="${cls}">${sign}${s.week_change_pct}%</td><td>Rs.${formatNum(s.current_value)}</td></tr>`;
+  }).join('');
+
+  const decisionsHtml = (_weeklyData.key_decisions || []).map(d => {
+    const colors = { WARNING: 'var(--red)', HARVEST: 'var(--amber)', PROFIT: 'var(--green)', TARGET: 'var(--cyan)', CONCENTRATION: 'var(--purple)' };
+    return `<div style="border-left:3px solid ${colors[d.type] || 'var(--border)'}; padding:8px 12px; margin-bottom:8px; background:var(--bg-card); border-radius:0 var(--radius-xs) var(--radius-xs) 0;">
+      <span style="font-size:10px; font-weight:700; text-transform:uppercase; letter-spacing:0.5px; color:${colors[d.type] || 'var(--text-muted)'}">${d.type}</span>
+      <div style="font-size:13px; color:var(--text-secondary); margin-top:2px;">${d.advice}</div>
+    </div>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom:24px;">
+      <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--cyan);">Weekly Portfolio Report</h3>
+      <div class="summary-grid" style="margin-bottom:16px;">
+        <div class="card">
+          <div class="card-title">Week Change</div>
+          <div class="card-value ${pnlClass}" style="font-size:22px;">${p.week_change_pct >= 0 ? '+' : ''}${p.week_change_pct.toFixed(2)}%</div>
+          <div class="card-sub ${pnlClass}">Rs.${p.week_change_pct >= 0 ? '+' : ''}${formatNum(Math.abs(p.week_pnl_abs))}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Total P&L</div>
+          <div class="card-value ${totalPnlClass}" style="font-size:22px;">${p.total_pnl_pct >= 0 ? '+' : ''}${p.total_pnl_pct.toFixed(2)}%</div>
+          <div class="card-sub ${totalPnlClass}">Rs.${p.total_pnl >= 0 ? '+' : ''}${formatNum(Math.abs(p.total_pnl))}</div>
+        </div>
+        <div class="card">
+          <div class="card-title">Current Value</div>
+          <div class="card-value" style="font-size:22px;">Rs.${formatNum(p.total_current)}</div>
+          <div class="card-sub">${p.holdings_count} holdings</div>
+        </div>
+      </div>
+
+      <div class="summary-grid">
+        <div class="card">
+          <div class="card-title">Top Weekly Gainers</div>
+          <table class="data-table" style="margin-top:8px;"><tbody>${gainersHtml}</tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-title">Top Weekly Losers</div>
+          <table class="data-table" style="margin-top:8px;"><tbody>${losersHtml}</tbody></table>
+        </div>
+        <div class="card">
+          <div class="card-title">Sector Performance</div>
+          <table class="data-table" style="margin-top:8px;"><tbody>${sectorHtml}</tbody></table>
+        </div>
+      </div>
+
+      ${decisionsHtml ? `<div style="margin-top:16px;"><div class="card-title" style="margin-bottom:8px;">Key Decisions</div>${decisionsHtml}</div>` : ''}
+    </div>
+  `;
+}
+
+function renderTSLSection() {
+  if (!_advisorData || !_advisorData.tsl_advice) return '';
+  const items = _advisorData.tsl_advice;
+  if (items.length === 0) return '<div class="card" style="margin-top:16px;"><div class="card-title">TSL Assistant</div><div class="text-muted">No holdings to analyze.</div></div>';
+
+  const actionColors = { 'EXIT NOW': 'var(--red)', 'MOVE SL': 'var(--amber)', 'TRAIL SL': 'var(--green)', 'HOLD SL': 'var(--text-muted)', 'REVIEW': 'var(--purple)' };
+
+  const rows = items.map(r => {
+    const color = actionColors[r.action] || 'var(--text-muted)';
+    const pnlCls = r.pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+    return `<tr>
+      <td class="sym-cell" onclick="openStockDrawer('${r.symbol}')" style="cursor:pointer;">${r.symbol.replace('.NS', '')}</td>
+      <td>Rs.${r.current_price}</td>
+      <td>Rs.${r.avg_price}</td>
+      <td class="${pnlCls}">${r.pnl_pct >= 0 ? '+' : ''}${r.pnl_pct}%</td>
+      <td>Rs.${r.recommended_sl}</td>
+      <td><span style="font-size:11px; font-weight:700; color:${color}">${r.sl_phase}</span></td>
+      <td><span style="padding:3px 8px; border-radius:999px; font-size:11px; font-weight:700; background:${color}20; color:${color}; border:1px solid ${color}40;">${r.action}</span></td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom:24px;">
+      <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--cyan);">Trailing Stop-Loss Assistant</h3>
+      <div class="card" style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Symbol</th><th>Price</th><th>Entry</th><th>P&L</th><th>Rec. SL</th><th>Phase</th><th>Action</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
+}
+
+function renderAveragingSection() {
+  if (!_advisorData || !_advisorData.averaging_recommendations) return '';
+  const items = _advisorData.averaging_recommendations;
+  if (items.length === 0) return '<div class="card" style="margin-top:16px;"><div class="card-title">Smart Averaging</div><div class="text-muted" style="padding:8px 0;">All holdings are above average cost.</div></div>';
+
+  const cards = items.map(r => {
+    const borderColor = r.safe_to_average ? 'var(--green)' : r.blocked ? 'var(--red)' : 'var(--amber)';
+    let actionHtml = '';
+    if (r.blocked) {
+      actionHtml = (r.block_reasons || []).map(br => `<div style="color:var(--red); font-size:12px; margin-top:4px;">[X] ${br}</div>`).join('');
+    } else if (r.action && r.action.includes('BUY')) {
+      actionHtml = `<div style="color:var(--green); font-size:13px; font-weight:600; margin-top:6px;">${r.action}</div>
+        <div style="font-size:12px; color:var(--text-secondary); margin-top:2px;">Investment: Rs.${formatNum(r.recommended_investment)} | New Avg: Rs.${r.new_avg_price}</div>`;
+      if (r.reasons) actionHtml += r.reasons.map(x => `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">* ${x}</div>`).join('');
+    } else {
+      actionHtml = `<div style="font-size:13px; color:var(--amber); margin-top:4px;">${r.action}</div>`;
+      if (r.reasons) actionHtml += r.reasons.map(x => `<div style="font-size:11px; color:var(--text-muted); margin-top:2px;">* ${x}</div>`).join('');
+    }
+    if (r.warnings && r.warnings.length > 0) {
+      actionHtml = r.warnings.map(w => `<div style="color:var(--red); font-size:12px; margin-top:4px; font-weight:600;">${w}</div>`).join('') + actionHtml;
+    }
+
+    return `<div class="card" style="border-left:3px solid ${borderColor}; margin-bottom:10px;">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <div>
+          <span class="sym-cell" style="cursor:pointer;" onclick="openStockDrawer('${r.symbol}')">${r.symbol.replace('.NS', '')}</span>
+          <span class="sector-badge" style="margin-left:8px;">${r.sector}</span>
+        </div>
+        <span class="pnl-negative" style="font-size:14px;">${r.loss_pct}%</span>
+      </div>
+      <div style="font-size:12px; color:var(--text-secondary); margin-top:4px;">Price: Rs.${r.current_price} | Avg: Rs.${r.avg_price}</div>
+      ${actionHtml}
+    </div>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom:24px;">
+      <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--cyan);">Smart Averaging Down</h3>
+      ${cards}
+    </div>
+  `;
+}
+
+function renderHarvestSection() {
+  if (!_advisorData || !_advisorData.tax_harvest) return '';
+  const data = _advisorData.tax_harvest;
+  const candidates = data.candidates || [];
+
+  if (candidates.length === 0) {
+    return '<div class="card" style="margin-top:16px;"><div class="card-title">Tax-Loss Harvesting</div><div class="text-muted" style="padding:8px 0;">No significant unrealized losses to harvest.</div></div>';
+  }
+
+  const priorityColors = { HIGH: 'var(--red)', MEDIUM: 'var(--amber)', LOW: 'var(--text-muted)' };
+
+  const rows = candidates.map(r => {
+    const pColor = priorityColors[r.priority] || 'var(--text-muted)';
+    return `<tr>
+      <td class="sym-cell" onclick="openStockDrawer('${r.symbol}')" style="cursor:pointer;">${r.symbol.replace('.NS', '')}</td>
+      <td><span class="sector-badge">${r.sector}</span></td>
+      <td class="pnl-negative">${r.loss_pct}%</td>
+      <td class="pnl-negative">Rs.${formatNum(r.unrealized_loss)}</td>
+      <td><span style="color:${pColor}; font-weight:700; font-size:11px;">${r.priority}</span></td>
+      <td style="font-size:12px; color:var(--text-secondary); max-width:300px; white-space:normal;">${r.advice}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="margin-bottom:24px;">
+      <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--cyan);">Tax-Loss Harvesting</h3>
+      <div class="summary-grid" style="margin-bottom:12px;">
+        <div class="card">
+          <div class="card-title">Total Harvestable Loss</div>
+          <div class="card-value pnl-negative" style="font-size:22px;">Rs.${formatNum(data.total_harvestable_loss)}</div>
+          <div class="card-sub">${data.candidate_count} candidates</div>
+        </div>
+        <div class="card">
+          <div class="card-title">FY-End Status</div>
+          <div class="card-value" style="font-size:22px; color:${data.near_fy_end ? 'var(--red)' : 'var(--green)'}">${data.near_fy_end ? 'NEAR' : 'Not near'}</div>
+          <div class="card-sub">${data.days_to_fy_end} days to FY end</div>
+        </div>
+      </div>
+      <div class="card" style="overflow-x:auto;">
+        <table class="data-table">
+          <thead><tr><th>Symbol</th><th>Sector</th><th>Loss %</th><th>Loss Rs.</th><th>Priority</th><th>Advice</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    </div>
+  `;
 }
 
 // ---------------------------------------------------------------------------

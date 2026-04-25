@@ -291,6 +291,40 @@ def cmd_ui(args):
     app.run(host="0.0.0.0", port=args.port, debug=args.debug)
 
 
+def cmd_advisor(args):
+    """Portfolio intelligence advisor — TSL, averaging, tax harvest."""
+    from portfolio.portfolio_advisor import PortfolioAdvisor
+
+    advisor = PortfolioAdvisor()
+
+    section = getattr(args, 'section', 'all')
+    force = getattr(args, 'force', False)
+
+    if section in ('all', 'tsl'):
+        advisor.print_tsl_advice()
+
+    if section in ('all', 'average'):
+        advisor.print_averaging_advice(force_override=force)
+
+    if section in ('all', 'harvest'):
+        advisor.print_tax_harvest()
+
+
+def cmd_weekly_report(args):
+    """Weekly portfolio performance summary."""
+    from portfolio.portfolio_advisor import PortfolioAdvisor
+
+    advisor = PortfolioAdvisor()
+    advisor.print_weekly_report()
+
+    if getattr(args, 'save', False):
+        filepath = advisor.save_weekly_report()
+        if filepath:
+            print(f"\n  Report saved to: {filepath}")
+        else:
+            print(f"\n  Could not save report (portfolio empty).")
+
+
 def cmd_portfolio(args):
     """Manage your stock portfolio."""
     from portfolio.portfolio_manager import PortfolioManager
@@ -542,6 +576,17 @@ Examples:
     p_ui.add_argument("--port", type=int, default=5000, help="Port (default: 5000)")
     p_ui.add_argument("--debug", action="store_true", help="Enable Flask debug mode")
 
+    # advisor
+    p_advisor = subparsers.add_parser("advisor", help="Portfolio intelligence advisor")
+    p_advisor.add_argument("--section", choices=["all", "tsl", "average", "harvest"],
+                           default="all", help="Which advisor section to show (default: all)")
+    p_advisor.add_argument("--force", action="store_true",
+                           help="Override downtrend safety gate for averaging (with warnings)")
+
+    # weekly-report
+    p_weekly = subparsers.add_parser("weekly-report", help="Weekly portfolio performance summary")
+    p_weekly.add_argument("--save", action="store_true", help="Save report to data/reports/")
+
     # portfolio
     p_portfolio = subparsers.add_parser("portfolio", help="Manage your stock portfolio")
     portfolio_sub = p_portfolio.add_subparsers(dest="portfolio_action")
@@ -591,6 +636,8 @@ Examples:
         "info": cmd_info,
         "ui": cmd_ui,
         "portfolio": cmd_portfolio,
+        "advisor": cmd_advisor,
+        "weekly-report": cmd_weekly_report,
     }
 
     commands[args.command](args)
