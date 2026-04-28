@@ -40,7 +40,8 @@ def build_static_site():
         "/api/watchlist",
         "/api/tracking",
         "/api/market-status",
-        "/api/cache-status"
+        "/api/cache-status",
+        "/api/swing-signals"
     ]
     for ep in endpoints:
         resp = client.get(ep)

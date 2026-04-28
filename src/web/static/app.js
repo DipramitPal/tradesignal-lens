@@ -43,6 +43,51 @@ function switchTab(tab) {
   // Show/hide panels
   document.querySelectorAll('.tab-panel').forEach(panel => {
     panel.classList.toggle('hidden', panel.id !== `panel-${tab}`);
+/* ================================================================
+   TradeSignal Lens — Dashboard JavaScript
+   ================================================================ */
+
+// ---------------------------------------------------------------------------
+// State
+// ---------------------------------------------------------------------------
+let currentTab = 'summary';
+let chartInstance = null;
+let candleSeries = null;
+let volumeSeries = null;
+let sma20Series = null;
+let sma50Series = null;
+let slLine = null;
+let entryLine = null;
+
+// ---------------------------------------------------------------------------
+// Init
+// ---------------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', () => {
+  loadMarketStatus();
+  loadSummary();
+  loadCacheStatus();
+  setupSearch();
+  // Refresh market status + cache status every 60s
+  setInterval(loadMarketStatus, 60000);
+  setInterval(loadCacheStatus, 60000);
+  // Auto-refresh active tab every 60s
+  setInterval(refreshCurrentTab, 60000);
+});
+
+// ---------------------------------------------------------------------------
+// TAB NAVIGATION
+// ---------------------------------------------------------------------------
+function switchTab(tab) {
+  currentTab = tab;
+
+  // Update nav buttons
+  document.querySelectorAll('.nav-btn').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.tab === tab);
+  });
+
+  // Show/hide panels
+  document.querySelectorAll('.tab-panel').forEach(panel => {
+    panel.classList.toggle('hidden', panel.id !== `panel-${tab}`);
     if (panel.id === `panel-${tab}`) {
       panel.classList.add('active');
     } else {
@@ -58,6 +103,8 @@ function switchTab(tab) {
     case 'tracking': loadTracking(); break;
     case 'momentum': loadMomentum(); break;
     case 'advisor': loadAdvisor(); break;
+    case 'backtest': loadBacktest(); break;
+    case 'signals': loadSwingSignals(); break;
   }
 }
 
@@ -373,6 +420,8 @@ async function loadWatchlist() {
         <td><span class="tier-badge ${item.tier}">${item.tier}</span></td>
         <td>₹${item.price.toFixed(2)}</td>
         <td class="${item.day_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative'}">${item.day_change_pct >= 0 ? '+' : ''}${item.day_change_pct}%</td>
+        <td style="font-weight:600;color:var(--cyan);">${(item.swing_rank || 0).toFixed(1)} <span class="text-muted">${item.swing_rank_bucket || ''}</span></td>
+        <td>${item.swing_setup || 'NO_SETUP'}</td>
         <td>${item.mtf_score.toFixed(3)}</td>
         <td>${item.entry_quality}/100</td>
         <td>${item.rsi}</td>
@@ -410,7 +459,7 @@ async function loadWatchlist() {
           <thead>
             <tr>
               <th>Symbol</th><th>Tier</th><th>Price</th><th>Change</th>
-              <th>MTF Score</th><th>Quality</th><th>RSI</th><th>RVOL</th>
+              <th>Swing Rank</th><th>Setup</th><th>MTF Score</th><th>Quality</th><th>RSI</th><th>RVOL</th>
               <th>Sector</th><th>SL</th><th>Track</th>
             </tr>
           </thead>
@@ -610,10 +659,10 @@ async function loadMomentum() {
     const data = await res.json();
     let items = data.items || [];
 
-    // Filter positive scores and sort by momentum (score × rvol × entry_quality)
+    // Filter positive swing candidates and sort by swing rank.
     items = items
-      .filter(i => i.mtf_score > 0)
-      .map(i => ({ ...i, momentum: i.mtf_score * i.rvol * (i.entry_quality / 100) }))
+      .filter(i => (i.swing_rank || 0) > 0)
+      .map(i => ({ ...i, momentum: i.swing_rank || 0 }))
       .sort((a, b) => b.momentum - a.momentum)
       .slice(0, 15);
 
@@ -628,7 +677,8 @@ async function loadMomentum() {
         <td class="sym-cell">${item.symbol.replace('.NS', '')}${item.breakout ? ' <span title="Breakout Active" style="font-size:14px">🚀</span>' : ''}</td>
         <td>₹${item.price.toFixed(2)}</td>
         <td class="${item.day_change_pct >= 0 ? 'pnl-positive' : 'pnl-negative'}">${item.day_change_pct >= 0 ? '+' : ''}${item.day_change_pct}%</td>
-        <td style="font-weight:600;color:var(--cyan);">${item.momentum.toFixed(3)}</td>
+        <td style="font-weight:600;color:var(--cyan);">${item.momentum.toFixed(1)} <span class="text-muted">${item.swing_rank_bucket || ''}</span></td>
+        <td>${item.swing_setup || 'NO_SETUP'}</td>
         <td>${item.mtf_score.toFixed(3)}</td>
         <td>${item.rvol.toFixed(1)}x</td>
         <td>${item.entry_quality}/100</td>
@@ -646,7 +696,7 @@ async function loadMomentum() {
           <thead>
             <tr>
               <th>#</th><th>Symbol</th><th>Price</th><th>Change</th>
-              <th>Momentum</th><th>MTF</th><th>RVOL</th><th>Quality</th>
+              <th>Swing Rank</th><th>Setup</th><th>MTF</th><th>RVOL</th><th>Quality</th>
               <th>Squeeze</th><th>Tier</th><th>Track</th>
             </tr>
           </thead>
@@ -911,6 +961,250 @@ function renderHarvestSection() {
 }
 
 // ---------------------------------------------------------------------------
+// BACKTEST
+// ---------------------------------------------------------------------------
+let _backtestChart = null;
+
+function loadBacktest() {
+  // Just show config form — no auto-run
+}
+
+async function runBacktest() {
+  const resultsDiv = document.getElementById('backtest-results');
+  const btn = document.getElementById('btn-run-backtest');
+  btn.disabled = true;
+  btn.textContent = '⏳ Running backtest...';
+  resultsDiv.innerHTML = '<div class="loader-inline"><div class="spinner"></div> Running swing backtest (this may take 1-3 minutes)...</div>';
+
+  try {
+    const body = {
+      start_date: document.getElementById('bt-start').value,
+      end_date: document.getElementById('bt-end').value,
+      initial_capital: parseFloat(document.getElementById('bt-capital').value),
+      max_positions: parseInt(document.getElementById('bt-positions').value),
+      rebalance_freq: document.getElementById('bt-rebalance').value,
+      min_swing_rank: parseFloat(document.getElementById('bt-min-rank').value),
+    };
+
+    const res = await fetch('/api/backtest/run', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json();
+
+    if (data.error) {
+      resultsDiv.innerHTML = `<div class="text-red" style="padding:20px;">Error: ${data.error}</div>`;
+      return;
+    }
+
+    renderBacktestResults(data, resultsDiv);
+  } catch (e) {
+    resultsDiv.innerHTML = `<div class="text-red">Error: ${e.message}</div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🚀 Run Backtest';
+  }
+}
+
+function renderBacktestResults(data, container) {
+  const r = data.report || {};
+  const s = r.summary || {};
+  const ra = r.risk_adjusted || {};
+  const tq = r.trade_quality || {};
+  const ex = r.exposure || {};
+  const dd = r.drawdown || {};
+  const mr = r.monthly_returns || {};
+  const cfg = data.config || {};
+
+  const retClass = s.total_return_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+  const retSign = s.total_return_pct >= 0 ? '+' : '';
+
+  // Monthly heatmap
+  const monthTable = (mr.table || []);
+  const years = [...new Set(monthTable.map(m => m.year))].sort();
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  let heatmapHtml = '';
+  if (years.length > 0) {
+    heatmapHtml = '<table class="data-table" style="margin-top:8px;font-size:12px;"><thead><tr><th>Year</th>';
+    months.forEach(m => heatmapHtml += `<th>${m}</th>`);
+    heatmapHtml += '</tr></thead><tbody>';
+    years.forEach(yr => {
+      heatmapHtml += `<tr><td style="font-weight:600;">${yr}</td>`;
+      for (let mi = 1; mi <= 12; mi++) {
+        const entry = monthTable.find(m => m.year === yr && m.month === mi);
+        if (entry) {
+          const cls = entry.return_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+          heatmapHtml += `<td class="${cls}">${entry.return_pct >= 0 ? '+' : ''}${entry.return_pct.toFixed(1)}%</td>`;
+        } else {
+          heatmapHtml += '<td class="text-muted">—</td>';
+        }
+      }
+      heatmapHtml += '</tr>';
+    });
+    heatmapHtml += '</tbody></table>';
+  }
+
+  // By setup breakdown
+  const bySetup = r.by_setup || {};
+  let setupRows = '';
+  Object.entries(bySetup).sort((a, b) => b[1].total_pnl - a[1].total_pnl).forEach(([setup, st]) => {
+    setupRows += `<tr>
+      <td style="font-weight:600;">${setup}</td>
+      <td>${st.count}</td>
+      <td>${st.win_rate_pct.toFixed(1)}%</td>
+      <td class="${st.avg_pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">₹${formatNum(st.avg_pnl)}</td>
+      <td class="${st.total_pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">₹${formatNum(st.total_pnl)}</td>
+      <td>${st.avg_r.toFixed(2)}R</td>
+    </tr>`;
+  });
+
+  // By exit reason
+  const byExit = r.by_exit_reason || {};
+  let exitRows = '';
+  Object.entries(byExit).sort((a, b) => b[1].count - a[1].count).forEach(([reason, st]) => {
+    exitRows += `<tr>
+      <td style="font-weight:600;">${reason}</td>
+      <td>${st.count}</td>
+      <td>${st.win_rate_pct.toFixed(1)}%</td>
+      <td class="${st.avg_pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}">₹${formatNum(st.avg_pnl)}</td>
+      <td>${st.avg_hold.toFixed(0)}d</td>
+    </tr>`;
+  });
+
+  // Recent trades
+  const trades = data.recent_trades || [];
+  let tradeRows = trades.map(t => {
+    const cls = t.action === 'SELL' ? (t.pnl >= 0 ? 'pnl-positive' : 'pnl-negative') : '';
+    return `<tr>
+      <td>${t.date}</td>
+      <td style="font-weight:600;">${t.symbol}</td>
+      <td><span class="tier-badge ${t.action === 'BUY' ? 'HIGH' : 'LOW'}">${t.action}</span></td>
+      <td>₹${t.price.toFixed(2)}</td>
+      <td>${t.reason}</td>
+      <td class="${cls}">${t.action === 'SELL' ? (t.pnl >= 0 ? '+' : '') + '₹' + formatNum(Math.abs(t.pnl)) : '—'}</td>
+    </tr>`;
+  }).join('');
+
+  container.innerHTML = `
+    <!-- Key Metrics -->
+    <div class="summary-grid" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-title">Total Return</div>
+        <div class="card-value ${retClass}" style="font-size:22px;">${retSign}${s.total_return_pct}%</div>
+        <div class="card-sub">CAGR: ${s.cagr_pct}%</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Final Value</div>
+        <div class="card-value" style="font-size:22px;">₹${formatNum(s.final_value)}</div>
+        <div class="card-sub">Start: ₹${formatNum(s.initial_capital)}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Max Drawdown</div>
+        <div class="card-value pnl-negative" style="font-size:22px;">${s.max_drawdown_pct}%</div>
+        <div class="card-sub">${dd.max_dd_duration_days || 0} days</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Sharpe / Sortino</div>
+        <div class="card-value" style="font-size:22px;color:var(--cyan);">${ra.sharpe} / ${ra.sortino}</div>
+        <div class="card-sub">Calmar: ${ra.calmar}</div>
+      </div>
+    </div>
+
+    <!-- Trade Quality -->
+    <div class="summary-grid" style="margin-bottom:16px;">
+      <div class="card">
+        <div class="card-title">Trades</div>
+        <div class="card-value" style="font-size:20px;">${tq.total_trades}</div>
+        <div class="card-sub">Win Rate: ${tq.win_rate_pct}%</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Profit Factor</div>
+        <div class="card-value" style="font-size:20px;color:var(--cyan);">${tq.profit_factor}</div>
+        <div class="card-sub">Expectancy: ₹${formatNum(tq.expectancy)}</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Avg R-Multiple</div>
+        <div class="card-value" style="font-size:20px;">${tq.avg_r_multiple}R</div>
+        <div class="card-sub">Median: ${tq.median_r_multiple}R</div>
+      </div>
+      <div class="card">
+        <div class="card-title">Exposure</div>
+        <div class="card-value" style="font-size:20px;">${ex.time_in_market_pct}%</div>
+        <div class="card-sub">Avg ${ex.avg_positions_held} positions</div>
+      </div>
+    </div>
+
+    <!-- Equity Curve -->
+    <div class="card" style="margin-bottom:16px;">
+      <div class="card-title">Equity Curve</div>
+      <div id="bt-equity-chart" style="height:300px;margin-top:8px;"></div>
+    </div>
+
+    <!-- Monthly Heatmap -->
+    ${heatmapHtml ? `<div class="card" style="margin-bottom:16px;overflow-x:auto;">
+      <div class="card-title">Monthly Returns</div>
+      <div style="display:flex;gap:16px;margin-top:4px;font-size:12px;">
+        <span>Best: <span class="pnl-positive">${mr.best_month >= 0 ? '+' : ''}${mr.best_month}%</span></span>
+        <span>Worst: <span class="pnl-negative">${mr.worst_month}%</span></span>
+        <span>+ve: ${mr.positive_months} | -ve: ${mr.negative_months}</span>
+      </div>
+      ${heatmapHtml}
+    </div>` : ''}
+
+    <!-- By Setup -->
+    ${setupRows ? `<div class="card" style="margin-bottom:16px;overflow-x:auto;">
+      <div class="card-title">Performance by Setup Type</div>
+      <table class="data-table" style="margin-top:8px;">
+        <thead><tr><th>Setup</th><th>Trades</th><th>Win%</th><th>Avg PnL</th><th>Total PnL</th><th>Avg R</th></tr></thead>
+        <tbody>${setupRows}</tbody>
+      </table>
+    </div>` : ''}
+
+    <!-- By Exit Reason -->
+    ${exitRows ? `<div class="card" style="margin-bottom:16px;overflow-x:auto;">
+      <div class="card-title">Performance by Exit Reason</div>
+      <table class="data-table" style="margin-top:8px;">
+        <thead><tr><th>Reason</th><th>Trades</th><th>Win%</th><th>Avg PnL</th><th>Avg Hold</th></tr></thead>
+        <tbody>${exitRows}</tbody>
+      </table>
+    </div>` : ''}
+
+    <!-- Recent Trades -->
+    ${tradeRows ? `<div class="card" style="overflow-x:auto;">
+      <div class="card-title">Recent Trades (last 30)</div>
+      <table class="data-table" style="margin-top:8px;">
+        <thead><tr><th>Date</th><th>Symbol</th><th>Action</th><th>Price</th><th>Reason</th><th>PnL</th></tr></thead>
+        <tbody>${tradeRows}</tbody>
+      </table>
+    </div>` : ''}
+  `;
+
+  // Render equity curve with lightweight-charts
+  const eq = data.equity_curve || [];
+  if (eq.length > 0 && typeof LightweightCharts !== 'undefined') {
+    const chartEl = document.getElementById('bt-equity-chart');
+    if (_backtestChart) { _backtestChart.remove(); _backtestChart = null; }
+    _backtestChart = LightweightCharts.createChart(chartEl, {
+      layout: { background: { color: '#0d1117' }, textColor: '#8b949e' },
+      grid: { vertLines: { color: '#21262d' }, horzLines: { color: '#21262d' } },
+      width: chartEl.clientWidth,
+      height: 300,
+      rightPriceScale: { borderColor: '#30363d' },
+      timeScale: { borderColor: '#30363d' },
+    });
+    const series = _backtestChart.addAreaSeries({
+      topColor: 'rgba(38,198,218,0.4)',
+      bottomColor: 'rgba(38,198,218,0.04)',
+      lineColor: '#26c6da',
+      lineWidth: 2,
+    });
+    series.setData(eq);
+    _backtestChart.timeScale().fitContent();
+  }
+}
+
+// ---------------------------------------------------------------------------
 // STOCK DETAIL DRAWER
 // ---------------------------------------------------------------------------
 async function openStockDrawer(symbol) {
@@ -969,6 +1263,14 @@ async function openStockDrawer(symbol) {
         <div class="analysis-item">
           <span class="analysis-label">MTF Score</span>
           <span class="analysis-value" style="color:var(--cyan);">${analysis.mtf_score}</span>
+        </div>
+        <div class="analysis-item">
+          <span class="analysis-label">Swing Rank</span>
+          <span class="analysis-value" style="color:var(--cyan);">${analysis.swing_rank || 0}/100 ${analysis.swing_rank_bucket || ''}</span>
+        </div>
+        <div class="analysis-item">
+          <span class="analysis-label">Swing Setup</span>
+          <span class="analysis-value">${analysis.swing_setup || 'NO_SETUP'} (${analysis.swing_setup_quality || 0}/100)</span>
         </div>
         <div class="analysis-item">
           <span class="analysis-label">Entry Quality</span>
@@ -1266,4 +1568,228 @@ function formatNum(n) {
   if (Math.abs(n) >= 10000000) return (n / 10000000).toFixed(2) + ' Cr';
   if (Math.abs(n) >= 100000) return (n / 100000).toFixed(2) + ' L';
   return n.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+// ---------------------------------------------------------------------------
+// SWING SIGNALS TAB
+// ---------------------------------------------------------------------------
+let _swingSignalData = null;
+
+async function loadSwingSignals() {
+  const container = document.getElementById('signals-content');
+  container.innerHTML = '<div class="loader-inline"><div class="spinner"></div> Loading swing signals report...</div>';
+
+  try {
+    const res = await fetch('/api/swing-signals');
+    const data = await res.json();
+
+    if (data.empty || data.error) {
+      container.innerHTML = `
+        <div class="card" style="text-align:center; padding:40px 20px;">
+          <div style="font-size:40px; margin-bottom:12px;">⚡</div>
+          <div style="font-size:16px; color:var(--text-secondary); margin-bottom:16px;">No swing signal report found yet.</div>
+          <div style="font-size:13px; color:var(--text-muted); margin-bottom:20px;">Click the button below to run the EOD scanner on your universe.</div>
+          <button class="btn-primary" onclick="runSwingScan()">⚡ Run EOD Scan Now</button>
+        </div>`;
+      return;
+    }
+
+    _swingSignalData = data;
+    renderSwingSignals(data);
+  } catch (e) {
+    container.innerHTML = `<div class="text-red">Error loading swing signals: ${e.message}</div>`;
+  }
+}
+
+async function runSwingScan() {
+  const container = document.getElementById('signals-content');
+  const btn = document.getElementById('btn-run-scan');
+  if (btn) { btn.disabled = true; btn.textContent = '⏳ Scanning...'; }
+  container.innerHTML = '<div class="loader-inline"><div class="spinner"></div> Running EOD swing scan (this may take 30-60s)...</div>';
+
+  try {
+    const res = await fetch('/api/swing-signals/run', { method: 'POST' });
+    const data = await res.json();
+
+    if (data.error) {
+      container.innerHTML = `<div class="text-red">Error: ${data.error}</div>`;
+      return;
+    }
+
+    _swingSignalData = data;
+    renderSwingSignals(data);
+  } catch (e) {
+    container.innerHTML = `<div class="text-red">Scan error: ${e.message}</div>`;
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '⚡ Run EOD Scan'; }
+  }
+}
+
+function renderSwingSignals(data) {
+  const container = document.getElementById('signals-content');
+  const buySignals = data.buy_signals || [];
+  const holdUpdates = data.hold_updates || [];
+  const sellAlerts = data.sell_alerts || [];
+  const regime = data.market_regime || 'UNKNOWN';
+  const scanned = data.universe_scanned || 0;
+  const passed = data.candidates_passed_filter || 0;
+  const generatedAt = data.generated_at || '';
+  const reportFile = data.report_file || '';
+
+  // Summary cards
+  let html = `
+    <div class="flex gap-8 mb-8" style="gap:12px;flex-wrap:wrap;">
+      <div class="card" style="min-width:140px;text-align:center;">
+        <div class="card-title">Regime</div>
+        <div style="font-size:16px;font-weight:700;color:var(--cyan);">${regime}</div>
+      </div>
+      <div class="card" style="min-width:140px;text-align:center;">
+        <div class="card-title">🟢 BUY</div>
+        <div style="font-size:20px;font-weight:700;color:var(--green);">${buySignals.length}</div>
+      </div>
+      <div class="card" style="min-width:140px;text-align:center;">
+        <div class="card-title">🟡 HOLD</div>
+        <div style="font-size:20px;font-weight:700;color:var(--amber);">${holdUpdates.length}</div>
+      </div>
+      <div class="card" style="min-width:140px;text-align:center;">
+        <div class="card-title">🔴 SELL</div>
+        <div style="font-size:20px;font-weight:700;color:var(--red);">${sellAlerts.length}</div>
+      </div>
+      <div class="card" style="min-width:140px;text-align:center;">
+        <div class="card-title">Scanned</div>
+        <div style="font-size:16px;font-weight:600;">${scanned} → ${passed} passed</div>
+      </div>
+    </div>`;
+
+  // Meta info
+  if (generatedAt) {
+    html += `<div style="font-size:11px; color:var(--text-muted); margin-bottom:16px;">Report: ${generatedAt}${reportFile ? ' · ' + reportFile : ''}</div>`;
+  }
+
+  // ── SELL ALERTS ──────────────────────────
+  if (sellAlerts.length > 0) {
+    const sellRows = sellAlerts.map(s => {
+      const pnlCls = s.pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+      const urgencyColor = s.urgency === 'IMMEDIATE' ? 'var(--red)' : 'var(--amber)';
+      const reasonsHtml = (s.exit_reasons || []).slice(0, 3).map(r => `<div style="font-size:11px; color:var(--text-muted); padding-left:16px;">└─ ${r}</div>`).join('');
+      return `<tr onclick="openStockDrawer('${s.symbol}')">
+        <td class="sym-cell">${s.symbol.replace('.NS', '')}</td>
+        <td>₹${s.price.toFixed(2)}</td>
+        <td>₹${s.entry_price.toFixed(2)}</td>
+        <td class="${pnlCls}">${s.pnl_pct >= 0 ? '+' : ''}${s.pnl_pct}%</td>
+        <td><span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${urgencyColor}20;color:${urgencyColor};border:1px solid ${urgencyColor}40;">${s.urgency}</span></td>
+        <td>${s.reason}</td>
+        <td>${s.exit_score.toFixed(2)}</td>
+      </tr><tr><td colspan="7" style="padding:0 0 8px 0;">${reasonsHtml}</td></tr>`;
+    }).join('');
+
+    html += `
+      <div style="margin-bottom:24px;">
+        <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--red);">🔴 SELL Alerts</h3>
+        <div class="card" style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr>
+              <th>Symbol</th><th>Price</th><th>Entry</th><th>P&L</th><th>Urgency</th><th>Reason</th><th>Score</th>
+            </tr></thead>
+            <tbody>${sellRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ── HOLD UPDATES ────────────────────────
+  if (holdUpdates.length > 0) {
+    const holdRows = holdUpdates.map(h => {
+      const pnlCls = h.pnl_pct >= 0 ? 'pnl-positive' : 'pnl-negative';
+      const phaseColors = { 'INITIAL': 'var(--text-muted)', 'BREAKEVEN': 'var(--amber)', 'TRAILING': 'var(--cyan)', 'LOCK': 'var(--green)' };
+      const phaseColor = phaseColors[h.sl_phase] || 'var(--text-muted)';
+      let alertHtml = '';
+      if (h.alert === 'BOOK_T2') alertHtml = '<span style="color:var(--green);font-weight:700;font-size:11px;">⚡ BOOK T2</span>';
+      else if (h.alert === 'BOOK_T1') alertHtml = '<span style="color:var(--cyan);font-weight:700;font-size:11px;">⚡ BOOK T1</span>';
+      else if (h.alert === 'TIGHTEN_SL') alertHtml = '<span style="color:var(--amber);font-weight:700;font-size:11px;">⚡ SL MOVED</span>';
+
+      return `<tr onclick="openStockDrawer('${h.symbol}')">
+        <td class="sym-cell">${h.symbol.replace('.NS', '')}</td>
+        <td>₹${h.price.toFixed(2)}</td>
+        <td class="${pnlCls}">${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct}%</td>
+        <td class="${pnlCls}">${h.r_multiple >= 0 ? '+' : ''}${h.r_multiple.toFixed(1)}R</td>
+        <td>₹${h.new_sl.toFixed(2)}</td>
+        <td><span style="font-size:11px;font-weight:700;color:${phaseColor}">${h.sl_phase}</span></td>
+        <td style="font-size:11px;">T1:₹${h.t1.toFixed(0)} ${h.t1_hit ? '✅' : ''} · T2:₹${h.t2.toFixed(0)} ${h.t2_hit ? '✅' : ''}</td>
+        <td>${alertHtml}</td>
+      </tr>`;
+    }).join('');
+
+    html += `
+      <div style="margin-bottom:24px;">
+        <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--amber);">🟡 HOLD Updates — Dynamic SL & Targets</h3>
+        <div class="card" style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr>
+              <th>Symbol</th><th>Price</th><th>P&L</th><th>R-Multiple</th><th>Current SL</th><th>Phase</th><th>Targets</th><th>Alert</th>
+            </tr></thead>
+            <tbody>${holdRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  }
+
+  // ── BUY SIGNALS ─────────────────────────
+  if (buySignals.length > 0) {
+    const buyRows = buySignals.map((b, idx) => {
+      const reasonsHtml = (b.reasons || []).slice(0, 2).map(r => `<div style="font-size:11px; color:var(--text-muted); padding-left:16px;">· ${r}</div>`).join('');
+      return `<tr onclick="openStockDrawer('${b.symbol}')">
+        <td style="color:var(--text-muted);font-weight:600;">#${idx + 1}</td>
+        <td class="sym-cell">${b.symbol.replace('.NS', '')}</td>
+        <td style="font-weight:600;color:var(--cyan);">${b.rank_score.toFixed(1)} <span class="text-muted">${b.rank_bucket}</span></td>
+        <td>${b.setup_type}</td>
+        <td>₹${b.price.toFixed(2)}</td>
+        <td>₹${b.entry_sl.toFixed(2)}</td>
+        <td>₹${b.t1.toFixed(0)}</td>
+        <td>₹${b.t2.toFixed(0)}</td>
+        <td>${b.rr_ratio.toFixed(1)}x</td>
+        <td>${b.suggested_shares}</td>
+        <td><span class="sector-badge">${b.sector}</span></td>
+        <td>
+          <button class="btn-success" onclick="event.stopPropagation(); quickTrack('${b.symbol}', ${b.price})" title="Track">🎯</button>
+        </td>
+      </tr><tr><td colspan="12" style="padding:0 0 6px 0;">${reasonsHtml}</td></tr>`;
+    }).join('');
+
+    html += `
+      <div style="margin-bottom:24px;">
+        <h3 style="font-size:16px; font-weight:700; margin-bottom:12px; color:var(--green);">🟢 BUY Signals — Ranked by Swing Score</h3>
+        <div class="card" style="overflow-x:auto;">
+          <table class="data-table">
+            <thead><tr>
+              <th>#</th><th>Symbol</th><th>Rank</th><th>Setup</th><th>Price</th><th>SL</th><th>T1</th><th>T2</th><th>R:R</th><th>Shares</th><th>Sector</th><th>Track</th>
+            </tr></thead>
+            <tbody>${buyRows}</tbody>
+          </table>
+        </div>
+      </div>`;
+  } else if (sellAlerts.length === 0 && holdUpdates.length === 0) {
+    html += `
+      <div class="card" style="text-align:center; padding:30px 20px;">
+        <div style="font-size:14px; color:var(--text-muted);">No signals generated — market conditions or rank filters not met.</div>
+      </div>`;
+  }
+
+  // Sector summary
+  const sectors = data.sector_summary || {};
+  const sectorEntries = Object.entries(sectors);
+  if (sectorEntries.length > 0) {
+    const phaseColors = { 'LEADING': 'var(--green)', 'IMPROVING': 'var(--cyan)', 'WEAKENING': 'var(--amber)', 'LAGGING': 'var(--red)' };
+    const sectorBadges = sectorEntries.map(([sec, phase]) => {
+      const c = phaseColors[phase] || 'var(--text-muted)';
+      return `<span style="display:inline-block;padding:4px 10px;margin:3px;border-radius:6px;font-size:11px;font-weight:600;background:${c}15;color:${c};border:1px solid ${c}30;">${sec}: ${phase}</span>`;
+    }).join('');
+    html += `
+      <div class="card" style="margin-top:8px;">
+        <div class="card-title" style="margin-bottom:8px;">Sector Phases</div>
+        <div>${sectorBadges}</div>
+      </div>`;
+  }
+
+  container.innerHTML = html;
 }

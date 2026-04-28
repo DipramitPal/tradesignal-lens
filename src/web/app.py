@@ -183,6 +183,17 @@ def _classify_recommendation(mtf_score: float, entry_quality: int) -> str:
         return "LOW"
 
 
+def _classify_swing_tier(swing_rank: float, setup_actionable: bool) -> str:
+    """Classify UI recommendation tier using the swing/position engine."""
+    if not setup_actionable:
+        return "LOW"
+    if swing_rank >= 68:
+        return "HIGH"
+    if swing_rank >= 55:
+        return "MEDIUM"
+    return "LOW"
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -483,6 +494,9 @@ def create_app() -> Flask:
         from signal_generator import score_signals, normalize_score, score_to_recommendation
         from quant.regime_classifier import classify_regime, get_weight_table
         from quant.risk_manager import compute_entry_quality, compute_initial_sl
+        from quant.sector_analyzer import SectorAnalyzer
+        from quant.swing_engine import classify_swing_setup
+        from quant.swing_ranker import compute_swing_rank
 
         # Determine regime
         regime = "RANGE_BOUND"
@@ -497,6 +511,7 @@ def create_app() -> Flask:
                 break
 
         weight_table = get_weight_table(regime)
+        sector_analyzer = SectorAnalyzer()
         items = []
         scan_symbols = MONITOR_SYMBOLS[:30]  # Limit for speed
 
@@ -540,8 +555,20 @@ def create_app() -> Flask:
                     price, rsi, squeeze_fire, rvol, cmf,
                 )
 
-                sl = compute_initial_sl(price, atr)
-                tier = _classify_recommendation(normalized, entry_quality)
+                swing_setup = classify_swing_setup(df_ind, current_price=price, rvol=rvol)
+                sector_mult = sector_analyzer.get_sector_multiplier(sym)
+                swing_rank = compute_swing_rank(
+                    df_ind,
+                    price=price,
+                    swing_setup=swing_setup.as_dict(),
+                    mtf_score=normalized,
+                    entry_quality=entry_quality,
+                    rvol=rvol,
+                    sector_multiplier=sector_mult,
+                )
+
+                sl = swing_setup.stop_loss if swing_setup.stop_loss > 0 else compute_initial_sl(price, atr)
+                tier = _classify_swing_tier(swing_rank["score"], swing_setup.actionable)
 
                 prev_close = _sf(df_ind.iloc[-2]["close"], price) if len(df_ind) > 1 else price
                 day_change = round(((price - prev_close) / (prev_close + 1e-10)) * 100, 2)
@@ -558,6 +585,11 @@ def create_app() -> Flask:
                     "recommendation": rec,
                     "tier": tier,
                     "stop_loss": round(sl, 2),
+                    "swing_setup": swing_setup.setup_type,
+                    "swing_setup_quality": swing_setup.quality_score,
+                    "swing_rank": swing_rank["score"],
+                    "swing_rank_bucket": swing_rank["bucket"],
+                    "swing_rank_metrics": swing_rank["metrics"],
                     "rvol": round(rvol, 2),
                     "sector": SYMBOL_SECTOR.get(sym, "MISC"),
                     "squeeze_fire": bool(squeeze_fire),
@@ -572,7 +604,7 @@ def create_app() -> Flask:
         tier_order = {"HIGH": 0, "MEDIUM": 1, "LOW": 2}
         items.sort(key=lambda x: (
             tier_order.get(x["tier"], 3),
-            -(x["mtf_score"] * x["entry_quality"]),
+            -x.get("swing_rank", 0),
         ))
 
         return jsonify({"items": items, "regime": regime})
@@ -702,6 +734,9 @@ def create_app() -> Flask:
             from quant.regime_classifier import classify_regime, get_weight_table
             from quant.risk_manager import compute_entry_quality, compute_initial_sl
             from quant.divergence_detector import detect_all_divergences, summarize_divergences
+            from quant.sector_analyzer import SectorAnalyzer
+            from quant.swing_engine import classify_swing_setup
+            from quant.swing_ranker import compute_swing_rank
 
             df = _cache.get_daily(symbol)
             if df.empty:
@@ -744,12 +779,23 @@ def create_app() -> Flask:
             normalized = normalize_score(score, max_possible=0.8)
             rec = score_to_recommendation(normalized)
             conf = score_to_confidence(normalized)
-            sl = compute_initial_sl(price, atr)
 
             vol = _sf(latest.get("volume", 0), 0)
             vol_avg = _sf(df_ind["volume"].rolling(20).mean().iloc[-1], vol) if len(df_ind) >= 20 else vol
             rvol = vol / (vol_avg + 1e-10)
             entry_quality = compute_entry_quality(price, rsi, squeeze, rvol, cmf)
+            swing_setup = classify_swing_setup(df_ind, current_price=price, rvol=rvol)
+            sector_mult = SectorAnalyzer().get_sector_multiplier(symbol)
+            swing_rank = compute_swing_rank(
+                df_ind,
+                price=price,
+                swing_setup=swing_setup.as_dict(),
+                mtf_score=normalized,
+                entry_quality=entry_quality,
+                rvol=rvol,
+                sector_multiplier=sector_mult,
+            )
+            sl = swing_setup.stop_loss if swing_setup.stop_loss > 0 else compute_initial_sl(price, atr)
 
             divs = detect_all_divergences(df_ind, lookback=50)
             div_summary = summarize_divergences(divs)
@@ -757,7 +803,7 @@ def create_app() -> Flask:
             prev_close = _sf(df_ind.iloc[-2]["close"], price) if len(df_ind) > 1 else price
             day_change = round(((price - prev_close) / (prev_close + 1e-10)) * 100, 2)
 
-            tier = _classify_recommendation(normalized, entry_quality)
+            tier = _classify_swing_tier(swing_rank["score"], swing_setup.actionable)
 
             # Breakout detection
             is_bo, bo_level, pct_above_bo = _breakout_mgr.detect_breakout(
@@ -805,6 +851,12 @@ def create_app() -> Flask:
                 "recommendation": rec,
                 "confidence": conf,
                 "stop_loss": round(sl, 2),
+                "swing_setup": swing_setup.setup_type,
+                "swing_setup_quality": swing_setup.quality_score,
+                "swing_rank": swing_rank["score"],
+                "swing_rank_bucket": swing_rank["bucket"],
+                "swing_rank_components": swing_rank["components"],
+                "swing_rank_metrics": swing_rank["metrics"],
                 "divergence": div_summary["direction"],
                 "sector": SYMBOL_SECTOR.get(symbol, "MISC"),
                 "tier": tier,
@@ -898,6 +950,152 @@ def create_app() -> Flask:
         all_syms = list(set(SCAN_UNIVERSE + MONITOR_SYMBOLS + list(_portfolio.holdings.keys())))
         matches = [s for s in all_syms if q in s][:15]
         return jsonify({"results": matches})
+
+    # ── Swing Backtest API ─────────────────────────────────────────────
+
+    @app.route("/api/backtest/run", methods=["POST"])
+    def api_backtest_run():
+        """Run the swing backtester and return full analytics."""
+        try:
+            from quant.swing_backtester import SwingBacktester, SwingBacktestConfig
+            from quant.backtest_analytics import compute_full_analytics
+
+            data = request.get_json(silent=True) or {}
+
+            cfg = SwingBacktestConfig(
+                universe=data.get("universe", MONITOR_SYMBOLS[:15]),
+                start_date=data.get("start_date", "2023-06-01"),
+                end_date=data.get("end_date", "2024-12-31"),
+                initial_capital=float(data.get("initial_capital", 500_000)),
+                max_positions=int(data.get("max_positions", 5)),
+                rebalance_freq=data.get("rebalance_freq", "weekly"),
+                risk_per_trade=float(data.get("risk_per_trade", 0.02)),
+                min_swing_rank=float(data.get("min_swing_rank", 40)),
+                replacement_threshold=float(data.get("replacement_threshold", 10)),
+                min_price=float(data.get("min_price", 50)),
+                min_avg_volume=int(data.get("min_avg_volume", 100_000)),
+            )
+
+            bt = SwingBacktester(cfg)
+            bt.load_data()
+            bt.run()
+
+            report = compute_full_analytics(bt)
+
+            # Add equity curve for charting
+            eq = bt.get_equity_curve()
+            eq_data = []
+            if not eq.empty and "date" in eq.columns:
+                for _, row in eq.iterrows():
+                    ts = int(pd.Timestamp(row["date"]).timestamp())
+                    eq_data.append({"time": ts, "value": round(float(row["total_value"]), 2)})
+
+            # Recent trades
+            trades_df = bt.get_trade_log()
+            recent = []
+            if not trades_df.empty:
+                tail = trades_df.tail(30)
+                for _, t in tail.iterrows():
+                    recent.append({
+                        "date": str(t.get("date", ""))[:10],
+                        "symbol": str(t.get("symbol", "")),
+                        "action": str(t.get("action", "")),
+                        "price": round(float(t.get("price", 0)), 2),
+                        "reason": str(t.get("reason", "")),
+                        "pnl": round(float(t.get("pnl", 0)), 2),
+                    })
+
+            return jsonify(_sanitize_for_json({
+                "report": report,
+                "equity_curve": eq_data,
+                "recent_trades": recent,
+                "config": {
+                    "universe_size": len(cfg.universe),
+                    "start_date": cfg.start_date,
+                    "end_date": cfg.end_date,
+                    "initial_capital": cfg.initial_capital,
+                    "max_positions": cfg.max_positions,
+                    "rebalance_freq": cfg.rebalance_freq,
+                },
+            }))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    # ── Swing Signal Runner API ───────────────────────────────────────
+
+    @app.route("/api/swing-signals")
+    def api_swing_signals():
+        """Return the latest saved swing signal report (from data/reports/)."""
+        try:
+            from settings import REPORTS_DIR
+            import glob
+
+            pattern = str(REPORTS_DIR / "swing_signals_*.json")
+            files = sorted(glob.glob(pattern), reverse=True)
+
+            if not files:
+                return jsonify({"error": "No swing signal report found. Run the EOD scan first.", "empty": True}), 200
+
+            with open(files[0], "r") as f:
+                report = json.load(f)
+
+            report["report_file"] = os.path.basename(files[0])
+            return jsonify(_sanitize_for_json(report))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/swing-signals/run", methods=["POST"])
+    def api_swing_signals_run():
+        """Run the SwingSignalRunner on-demand and return the report."""
+        try:
+            _ensure_cache()
+
+            from quant.swing_signal_runner import SwingSignalRunner, HeldPosition
+
+            # Build held positions from portfolio
+            _portfolio._load()
+            held = {}
+            for sym, h in _portfolio.holdings.items():
+                held[sym] = HeldPosition(
+                    symbol=sym,
+                    entry_price=float(h.get("avg_price", 0)),
+                    shares=int(h.get("qty", 0)),
+                    stop_loss=float(h.get("stop_loss", 0)),
+                    entry_date=h.get("added_date", ""),
+                    highest_since_entry=float(h.get("highest_price", h.get("avg_price", 0))),
+                )
+
+            # Build preloaded data from cache where available
+            preloaded = {}
+            from feature_engineering import add_technical_indicators
+            all_syms = list(set(MONITOR_SYMBOLS[:30]) | set(held.keys()))
+            for sym in all_syms:
+                df = _cache.get_daily(sym)
+                if not df.empty and len(df) >= 60:
+                    try:
+                        df_ind = add_technical_indicators(df.copy())
+                        df_ind["rvol"] = df_ind["volume"] / (df_ind["volume"].rolling(20).mean() + 1e-10)
+                        df_ind["swing_low_20d"] = df_ind["low"].rolling(20).min()
+                        preloaded[sym] = df_ind
+                    except Exception:
+                        pass
+
+            runner = SwingSignalRunner(
+                universe=list(preloaded.keys()),
+                held_positions=held,
+                account_value=_portfolio.account_value,
+                portfolio_manager=_portfolio,
+            )
+            report = runner.run(preloaded=preloaded)
+
+            # Return the dataclass as dict
+            from dataclasses import asdict
+            return jsonify(_sanitize_for_json(asdict(report)))
+        except Exception as e:
+            traceback.print_exc()
+            return jsonify({"error": str(e)}), 500
 
     return app
 

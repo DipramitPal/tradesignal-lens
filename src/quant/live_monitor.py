@@ -57,6 +57,8 @@ from quant.correlation_engine import CorrelationEngine
 from portfolio.portfolio_manager import PortfolioManager
 from quant.universe_scanner import UniverseScanner
 from quant.breakout_manager import BreakoutManager
+from quant.swing_engine import classify_swing_setup
+from quant.swing_ranker import compute_swing_rank
 
 
 class Position:
@@ -552,13 +554,28 @@ class LiveMonitor:
             current_price, rsi, squeeze_fire, rvol, cmf,
             near_support=near_support, near_fib_618=near_fib_618,
         )
+        swing_setup = classify_swing_setup(
+            df_daily_ind if not df_daily_ind.empty else df_primary,
+            current_price=current_price,
+            rvol=rvol,
+        )
+        swing_rank = compute_swing_rank(
+            df_daily_ind if not df_daily_ind.empty else df_primary,
+            price=current_price,
+            swing_setup=swing_setup.as_dict(),
+            mtf_score=normalized,
+            entry_quality=entry_quality,
+            rvol=rvol,
+            sector_multiplier=sector_mult,
+        )
 
         recommendation = self._build_recommendation(
             symbol=symbol, price=current_price, normalized_score=normalized,
             entry_quality=entry_quality, rsi=rsi, cmf=cmf,
             supertrend_dir=supertrend_dir, psar=psar, atr=atr,
             pivots=pivots, div_summary=div_summary, owned=owned,
-            gap_status=gap_status, rvol=rvol,
+            gap_status=gap_status, rvol=rvol, swing_setup=swing_setup.as_dict(),
+            swing_rank=swing_rank,
         )
 
         # Update position if owned
@@ -577,6 +594,14 @@ class LiveMonitor:
             "mtf_score": round(normalized, 3),
             "rvol": round(rvol, 2),
             "entry_quality": entry_quality,
+            "swing_setup": swing_setup.setup_type,
+            "swing_setup_quality": swing_setup.quality_score,
+            "swing_structure_level": swing_setup.structure_level,
+            "swing_stop_loss": swing_setup.stop_loss,
+            "swing_rank": swing_rank["score"],
+            "swing_rank_bucket": swing_rank["bucket"],
+            "swing_rank_components": swing_rank["components"],
+            "swing_rank_metrics": swing_rank["metrics"],
             "divergence": div_summary["direction"],
             "sector": SYMBOL_SECTOR.get(symbol, "MISC"),
             "squeeze_fire": bool(squeeze_fire),
@@ -642,13 +667,15 @@ class LiveMonitor:
     def _build_recommendation(
         self, *, symbol, price, normalized_score, entry_quality,
         rsi, cmf, supertrend_dir, psar, atr, pivots, div_summary, owned,
-        gap_status="NORMAL", rvol=1.0,
+        gap_status="NORMAL", rvol=1.0, swing_setup=None, swing_rank=None,
     ) -> dict:
         """Build recommendation using the normalized MTF score."""
         action = "HOLD"
         confidence = score_to_confidence(normalized_score)
         reasons = []
         risk_notes = []
+        swing_setup = swing_setup or {}
+        swing_rank = swing_rank or {"score": 0.0, "bucket": "AVOID", "components": {}, "metrics": {}}
 
         if owned:
             pos = self.positions[symbol]
@@ -756,7 +783,13 @@ class LiveMonitor:
         else:
             # NOT OWNED — should we buy?
             rec = score_to_recommendation(normalized_score)
-            sl_price = compute_initial_sl(price, atr)
+            structure_sl = float(swing_setup.get("stop_loss") or 0)
+            sl_price = structure_sl if structure_sl > 0 else compute_initial_sl(price, atr)
+            setup_type = swing_setup.get("setup_type", "NO_SETUP")
+            setup_quality = int(swing_setup.get("quality_score") or 0)
+            setup_actionable = bool(swing_setup.get("actionable"))
+            rank_score = float(swing_rank.get("score") or 0)
+            rank_bucket = swing_rank.get("bucket", "AVOID")
 
             # --- v3: R:R Gate ---
             rr_passes, rr_ratio, rr_reason = check_rr_gate(
@@ -800,6 +833,19 @@ class LiveMonitor:
                 reasons.append(rr_reason)
                 reasons.append(f"Signal is positive ({normalized_score:.2f}) but R:R insufficient")
 
+            elif "BUY" in rec and not setup_actionable:
+                action = "WATCHLIST"
+                confidence = "LOW"
+                reasons.append(f"Signal is positive ({normalized_score:.2f}) but no clean swing setup")
+                for reason in swing_setup.get("reasons", [])[:2]:
+                    reasons.append(reason)
+
+            elif "BUY" in rec and rank_score < 55:
+                action = "WATCHLIST"
+                confidence = "LOW"
+                reasons.append(f"Swing rank is too low ({rank_score:.1f}/100, bucket {rank_bucket})")
+                reasons.append("Wait for stronger momentum, trend quality, or cleaner risk")
+
             elif "STRONG BUY" in rec and entry_quality >= 50:
                 # --- v3: Regime-adaptive position sizing ---
                 regime_risk = get_regime_risk_pct(self._regime)
@@ -815,6 +861,8 @@ class LiveMonitor:
                 action = "BUY"
                 confidence = "HIGH"
                 reasons.append(f"Strong MTF score: {normalized_score:.2f}")
+                reasons.append(f"Swing setup: {setup_type} ({setup_quality}/100)")
+                reasons.append(f"Swing rank: {rank_score:.1f}/100 ({rank_bucket})")
                 reasons.append(f"Entry quality: {entry_quality}/100")
                 reasons.append(f"R:R ratio: {rr_ratio:.1f}")
                 if div_summary["direction"] == "BULLISH":
@@ -837,6 +885,8 @@ class LiveMonitor:
                 action = "BUY"
                 confidence = "MEDIUM"
                 reasons.append(f"Moderate MTF score: {normalized_score:.2f}")
+                reasons.append(f"Swing setup: {setup_type} ({setup_quality}/100)")
+                reasons.append(f"Swing rank: {rank_score:.1f}/100 ({rank_bucket})")
                 reasons.append(f"Entry quality: {entry_quality}/100")
                 reasons.append(f"R:R ratio: {rr_ratio:.1f}")
                 reasons.append(f"Set SL at {sl_price:.2f}")
@@ -866,6 +916,17 @@ class LiveMonitor:
 
             if pivots:
                 risk_notes.append(f"Pivot S3: {pivots.get('s3', 'N/A')} | R3: {pivots.get('r3', 'N/A')}")
+            if setup_type != "NO_SETUP":
+                risk_notes.append(
+                    f"Structure: {setup_type} level {swing_setup.get('structure_level', 0):.2f}"
+                )
+            if swing_rank.get("metrics"):
+                metrics = swing_rank["metrics"]
+                risk_notes.append(
+                    f"Rank inputs: 3M {metrics.get('momentum_3m_pct', 0):+.1f}% | "
+                    f"6M {metrics.get('momentum_6m_pct', 0):+.1f}% | "
+                    f"Risk {metrics.get('risk_pct', 0):.1f}%"
+                )
             risk_notes.append(f"SL (if buying): {sl_price:.2f}")
 
         return {
@@ -902,6 +963,10 @@ class LiveMonitor:
 
         print(f"  Regime: {result['regime']}  |  MTF Score: {result['mtf_score']:.3f}"
               f"  |  Quality: {result['entry_quality']}/100{gap_str}")
+        print(f"  Swing Setup: {result.get('swing_setup', 'NO_SETUP')}"
+              f"  |  Setup Quality: {result.get('swing_setup_quality', 0)}/100"
+              f"  |  Rank: {result.get('swing_rank', 0):.1f} ({result.get('swing_rank_bucket', 'AVOID')})"
+              f"  |  Structure SL: {result.get('swing_stop_loss', 0):.2f}")
         print(f"  RSI: {result['rsi']}  |  ADX: {result['adx']}"
               f"  |  RVOL: {result['rvol']:.1f}x  |  CMF: {result['cmf']:.3f}")
         print(f"  Supertrend: {result['supertrend']}"
@@ -946,10 +1011,10 @@ class LiveMonitor:
               f"{'  ⚠️ DEFENSE' if self._defense_mode else ''}")
 
         if buys:
-            # --- v3: Rank BUYs by composite score ---
+            # --- Swing/position ranking ---
             ranked_buys = sorted(
                 buys,
-                key=lambda r: r["mtf_score"] * r["entry_quality"] / 100.0,
+                key=lambda r: r.get("swing_rank", 0),
                 reverse=True,
             )
 
@@ -958,13 +1023,13 @@ class LiveMonitor:
             alloc_pcts = [0.40, 0.35, 0.25]  # Top 3 allocation
 
             for i, r in enumerate(ranked_buys[:3]):
-                composite = r["mtf_score"] * r["entry_quality"] / 100.0
+                composite = r.get("swing_rank", 0)
                 alloc = alloc_pcts[i] if i < len(alloc_pcts) else 0
                 alloc_amount = total_capital * alloc
                 print(f"     #{i+1} {r['symbol']} "
-                      f"(MTF: {r['mtf_score']:.2f}, "
-                      f"Quality: {r['entry_quality']}, "
-                      f"Composite: {composite:.3f}) "
+                      f"(Rank: {composite:.1f} {r.get('swing_rank_bucket', 'AVOID')}, "
+                      f"Setup: {r.get('swing_setup', 'NO_SETUP')}, "
+                      f"MTF: {r['mtf_score']:.2f}) "
                       f"→ Alloc: {alloc*100:.0f}% (₹{alloc_amount:,.0f})")
 
             if len(ranked_buys) > 3:

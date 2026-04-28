@@ -38,6 +38,12 @@
     <li><button class="nav-btn" data-tab="advisor" onclick="switchTab('advisor')">
       <span class="nav-icon">🧠</span><span class="nav-label">Advisor</span>
     </button></li>
+    <li><button class="nav-btn" data-tab="backtest" onclick="switchTab('backtest')">
+      <span class="nav-icon">📊</span><span class="nav-label">Backtest</span>
+    </button></li>
+    <li><button class="nav-btn" data-tab="signals" onclick="switchTab('signals')">
+      <span class="nav-icon">⚡</span><span class="nav-label">Swing Signals</span>
+    </button></li>
   </ul>
 
   <div class="sidebar-footer">
@@ -136,6 +142,67 @@
     </div>
     <div id="advisor-content">
       <div class="loader-inline"><div class="spinner"></div> Loading advisor...</div>
+    </div>
+  </section>
+
+  <!-- BACKTEST -->
+  <section id="panel-backtest" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Swing Backtester</h2>
+    </div>
+    <div id="backtest-content">
+      <!-- Config Form -->
+      <div class="card" style="margin-bottom:16px;">
+        <div class="card-title">Backtest Configuration</div>
+        <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px; margin-top:12px;">
+          <div class="form-group">
+            <label>Start Date</label>
+            <input id="bt-start" type="date" value="2023-06-01">
+          </div>
+          <div class="form-group">
+            <label>End Date</label>
+            <input id="bt-end" type="date" value="2024-12-31">
+          </div>
+          <div class="form-group">
+            <label>Capital (₹)</label>
+            <input id="bt-capital" type="number" value="500000" min="10000" step="10000">
+          </div>
+          <div class="form-group">
+            <label>Max Positions</label>
+            <input id="bt-positions" type="number" value="5" min="1" max="20">
+          </div>
+          <div class="form-group">
+            <label>Rebalance</label>
+            <select id="bt-rebalance">
+              <option value="weekly" selected>Weekly</option>
+              <option value="monthly">Monthly</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Min Rank</label>
+            <input id="bt-min-rank" type="number" value="40" min="0" max="100">
+          </div>
+        </div>
+        <button id="btn-run-backtest" class="btn-primary" style="margin-top:12px;" onclick="runBacktest()">🚀 Run Backtest</button>
+      </div>
+      <!-- Results (populated by JS) -->
+      <div id="backtest-results"></div>
+    </div>
+  </section>
+
+  <!-- SWING SIGNALS -->
+  <section id="panel-signals" class="tab-panel hidden">
+    <div class="panel-header">
+      <h2>Swing Signals</h2>
+      <div class="legend-bar">
+        <span class="legend-badge tier-high">🟢 BUY</span>
+        <span class="legend-badge tier-medium">🟡 HOLD</span>
+        <span class="legend-badge tier-low">🔴 SELL</span>
+        <button class="btn-secondary" onclick="runSwingScan()" id="btn-run-scan" style="margin-left:12px;">⚡ Run EOD Scan</button>
+      </div>
+    </div>
+    <div id="signals-content">
+      <div class="loader-inline"><div class="spinner"></div> Loading swing signals...</div>
     </div>
   </section>
 

@@ -371,3 +371,208 @@ def check_portfolio_limits(
             return False, f"Sector '{current_sector}' at {sector_pct:.0%} — exceeds {max_sector:.0%} limit"
 
     return True, ""
+
+
+# ------------------------------------------------------------------
+# Swing / Position Trade — Daily-Timeframe SL & Targets
+# ------------------------------------------------------------------
+
+def compute_swing_phase_sl(
+    entry_price: float,
+    current_price: float,
+    highest_since_entry: float,
+    atr_daily: float,
+    swing_low_20d: float,
+    current_sl: float,
+    sector_multiplier: float = 1.0,
+) -> tuple[float, str]:
+    """
+    4-phase adaptive stop-loss for SWING / POSITION trades.
+
+    Uses DAILY ATR (not 15-minute ATR) so the SL breathes with the
+    stock's natural daily volatility and doesn't whipsaw on intraday noise.
+
+    Phases
+    ------
+    INITIAL   — Structure SL set at entry (passed in as current_sl)
+    BREAKEVEN — When PnL ≥ 1R: move SL to entry price
+    TRAILING  — When PnL ≥ 2R: trail at highest_since_entry − 1.5× daily_ATR
+                  (tightened to 1.0× ATR if sector is WEAKENING/LAGGING)
+    LOCK      — When PnL ≥ 3R: lock in 50% of open profit minimum
+
+    Args:
+        entry_price:         Price at which position was entered.
+        current_price:       Latest daily close price.
+        highest_since_entry: Highest close since entry (updated externally).
+        atr_daily:           Current 14-day daily ATR value.
+        swing_low_20d:       20-day swing low (used as a floor check).
+        current_sl:          Current stop-loss price (never lowered).
+        sector_multiplier:   Sector rotation multiplier (< 0.90 → tighten trail).
+
+    Returns:
+        (new_sl, phase_name)  — new_sl is always ≥ current_sl (never lowered).
+    """
+    if entry_price <= 0 or atr_daily <= 0:
+        return current_sl, "INITIAL"
+
+    initial_risk = entry_price - current_sl  # 1R distance
+    if initial_risk <= 0:
+        initial_risk = entry_price * 0.02  # fallback: 2% of entry
+
+    pnl = current_price - entry_price
+    pnl_r = pnl / initial_risk if initial_risk > 0 else 0.0
+
+    # Trailing ATR multiplier — tighten when sector is weak
+    trail_mult = 1.5 if sector_multiplier >= 0.90 else 1.0
+
+    # Phase 4 — LOCK: ≥ 3R profit → lock in 50% of open gain
+    if pnl_r >= 3.0:
+        locked = entry_price + 0.50 * (highest_since_entry - entry_price)
+        trailing = highest_since_entry - trail_mult * atr_daily
+        new_sl = max(locked, trailing, current_sl)
+        return round(new_sl, 2), "LOCK"
+
+    # Phase 3 — TRAILING: ≥ 2R profit → trail below highest
+    if pnl_r >= 2.0:
+        trailing = highest_since_entry - trail_mult * atr_daily
+        # Use swing low as a secondary floor if it is higher than trail
+        if swing_low_20d > 0:
+            trailing = max(trailing, swing_low_20d - 0.25 * atr_daily)
+        new_sl = max(trailing, current_sl)
+        return round(new_sl, 2), "TRAILING"
+
+    # Phase 2 — BREAKEVEN: ≥ 1R profit → move SL to entry
+    if pnl_r >= 1.0:
+        new_sl = max(entry_price, current_sl)
+        return round(new_sl, 2), "BREAKEVEN"
+
+    # Phase 1 — INITIAL: keep original structure SL
+    return current_sl, "INITIAL"
+
+
+def compute_swing_targets(
+    entry_price: float,
+    stop_loss: float,
+    atr_daily: float,
+) -> dict:
+    """
+    Compute T1 / T2 / T3 target prices for a swing trade.
+
+    Targets are based on R-multiples of the initial risk (entry − SL).
+    A fallback using ATR extension is used when risk distance is very small.
+
+    Target strategy (partial exit):
+        T1 at 1.5R → sell 1/3 of position (lock early gain, reduce risk)
+        T2 at 2.5R → sell 1/3 of position (meaningful profit)
+        T3 at 4.0R → trail remainder (let the winner run)
+
+    Returns:
+        dict with keys: risk_per_share, t1, t2, t3, t1_r, t2_r, t3_r,
+                        exit_at_t1 (fraction), exit_at_t2, trail_from_t3
+    """
+    risk = entry_price - stop_loss
+    if risk <= 0 and atr_daily > 0:
+        risk = 1.5 * atr_daily  # fallback
+    if risk <= 0:
+        risk = entry_price * 0.02
+
+    t1 = round(entry_price + 1.5 * risk, 2)
+    t2 = round(entry_price + 2.5 * risk, 2)
+    t3 = round(entry_price + 4.0 * risk, 2)
+
+    return {
+        "risk_per_share": round(risk, 2),
+        "t1": t1,
+        "t2": t2,
+        "t3": t3,
+        "t1_r": 1.5,
+        "t2_r": 2.5,
+        "t3_r": 4.0,
+        "exit_at_t1": "Sell 1/3 position",
+        "exit_at_t2": "Sell 1/3 position",
+        "trail_from_t3": "Trail remaining 1/3 with daily ATR",
+    }
+
+
+def compute_swing_exit_score(
+    rsi_daily: float,
+    supertrend_dir_daily: float,
+    cmf_daily: float,
+    psar_daily: float,
+    current_price: float,
+    divergence_direction: str = "NONE",
+    swing_rank_score: float = 100.0,
+    min_swing_rank: float = 40.0,
+    pivot_r3: float = 0.0,
+    threshold: float = EXIT_SCORE_THRESHOLD,
+) -> tuple[bool, float, list[str]]:
+    """
+    Weighted exit scoring using DAILY timeframe indicators for swing trades.
+
+    Unlike compute_exit_score() (which uses 15m indicators), this function
+    is designed for positions held days to weeks. It uses daily RSI,
+    daily Supertrend, daily CMF, and daily PSAR — preventing intraday noise
+    from triggering premature exits.
+
+    Scoring breakdown (max ~1.65):
+        Daily Supertrend bearish flip  : 0.40  (strongest signal)
+        Bearish divergence             : 0.35
+        RSI daily overbought (> 75)    : 0.20–0.30
+        Daily CMF strongly negative    : 0.12–0.20
+        Parabolic SAR above price      : 0.25
+        Swing rank deterioration       : 0.15
+        Price at/above Pivot R3        : 0.15
+
+    Exit is recommended when total score ≥ threshold (default 0.60).
+
+    Returns:
+        (should_exit, exit_score, reasons)
+    """
+    score = 0.0
+    reasons: list[str] = []
+
+    # --- Daily Supertrend bearish flip (weight 0.40 — strongest) ---
+    if supertrend_dir_daily == -1:
+        score += 0.40
+        reasons.append("Daily Supertrend has flipped bearish (+0.40)")
+
+    # --- Bearish divergence (weight 0.35) ---
+    if "BEARISH" in divergence_direction:
+        score += 0.35
+        reasons.append(f"Bearish divergence confirmed (+0.35)")
+
+    # --- Daily RSI overbought ---
+    if rsi_daily > 80:
+        score += 0.30
+        reasons.append(f"Daily RSI strongly overbought at {rsi_daily:.0f} (+0.30)")
+    elif rsi_daily > 75:
+        score += 0.20
+        reasons.append(f"Daily RSI overbought at {rsi_daily:.0f} (+0.20)")
+
+    # --- Daily CMF institutional selling ---
+    if cmf_daily < -0.15:
+        score += 0.20
+        reasons.append(f"Daily CMF strongly negative ({cmf_daily:.3f}) — heavy selling (+0.20)")
+    elif cmf_daily < -0.10:
+        score += 0.12
+        reasons.append(f"Daily CMF negative ({cmf_daily:.3f}) — institutional selling (+0.12)")
+
+    # --- Daily PSAR above price ---
+    if psar_daily > 0 and psar_daily > current_price:
+        score += 0.25
+        reasons.append(f"Daily PSAR ({psar_daily:.2f}) above price — trend reversal (+0.25)")
+
+    # --- Swing rank deterioration ---
+    if swing_rank_score < min_swing_rank:
+        score += 0.15
+        reasons.append(
+            f"Swing rank dropped below minimum ({swing_rank_score:.1f} < {min_swing_rank:.1f}) (+0.15)"
+        )
+
+    # --- Price at/above Pivot R3 ---
+    if pivot_r3 > 0 and current_price >= pivot_r3:
+        score += 0.15
+        reasons.append(f"Price at/above Pivot R3 ({pivot_r3:.2f}) — resistance (+0.15)")
+
+    should_exit = score >= threshold
+    return should_exit, round(score, 2), reasons

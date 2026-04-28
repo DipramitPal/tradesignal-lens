@@ -7,7 +7,7 @@ Usage:
     python main.py analyze RELIANCE.NS          # Analyze a single stock
     python main.py watchlist                    # Scan full watchlist
     python main.py monitor                      # Live monitoring with buy/sell/SL advice
-    python main.py scan                         # One-shot full quant scan (15m + daily MTF)
+    python main.py scan                         # One-shot swing scan with setup/rank/SL
     python main.py portfolio                    # View your portfolio
     python main.py portfolio add RELIANCE.NS 10 2500
     python main.py portfolio remove RELIANCE.NS
@@ -122,7 +122,7 @@ def cmd_monitor(args):
 
 
 def cmd_scan(args):
-    """One-shot full quant scan using 15m + daily MTF pipeline."""
+    """One-shot swing/position scan using setup, rank, and structure-aware SL."""
     from quant.live_monitor import LiveMonitor
     from quant.universe_scanner import UniverseScanner
     from portfolio.portfolio_manager import PortfolioManager
@@ -134,6 +134,8 @@ def cmd_scan(args):
     portfolio = PortfolioManager()
     if portfolio.account_value and portfolio.account_value != DEFAULT_ACCOUNT_VALUE:
         account = portfolio.account_value
+
+    print("\n  Swing Engine: setup classification + rank + structure-aware SL enabled")
 
     if use_universe:
         print("\n  Running universe pre-screen...")
@@ -150,7 +152,7 @@ def cmd_scan(args):
     monitor = LiveMonitor(symbols=symbols, account_value=account)
     # Portfolio positions auto-loaded by LiveMonitor
     results = monitor.run_once()
-    print(f"\n  Scan complete. {len(results)} symbols analyzed.")
+    print(f"\n  Swing scan complete. {len(results)} symbols analyzed.")
 
 
 def cmd_brief(args):
@@ -501,7 +503,7 @@ Examples:
   python main.py portfolio remove RELIANCE.NS
   python main.py portfolio update TCS.NS --qty 10 --sl 3650
   python main.py portfolio set-account 500000    # set account value
-  python main.py scan                            # scan uses portfolio
+  python main.py scan                            # swing scan uses portfolio
   python main.py brief
   python main.py news TCS.NS --limit 20
   python main.py status
@@ -563,7 +565,7 @@ Examples:
     p_info.add_argument("symbol", help="Stock symbol")
 
     # scan
-    p_scan = subparsers.add_parser("scan", help="One-shot full quant scan (15m + daily MTF)")
+    p_scan = subparsers.add_parser("scan", help="One-shot swing scan with setup/rank/SL")
     p_scan.add_argument("--symbols", type=str, default="",
                         help="Comma-separated list of symbols to scan")
     p_scan.add_argument("--universe", action="store_true",
