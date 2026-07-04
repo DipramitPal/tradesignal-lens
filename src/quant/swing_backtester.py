@@ -36,7 +36,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from feature_engineering import add_technical_indicators
 from quant.swing_engine import classify_swing_setup, SwingSetup
 from quant.swing_ranker import compute_swing_rank
-from quant.risk_manager import compute_position_size
+from quant.risk_manager import compute_position_size, get_regime_risk_pct
+from quant.regime_classifier import RegimeClassifier
+from quant.correlation_engine import CorrelationEngine
+from settings import (
+    SYMBOL_SECTOR, MAX_SECTOR_EXPOSURE,
+    STT_PCT, BROKERAGE_PER_ORDER, STAMP_DUTY_PCT, GST_PCT
+)
 
 
 # ------------------------------------------------------------------
@@ -58,6 +64,44 @@ class SwingBacktestConfig:
     transaction_cost_pct: float = 0.001  # 0.10% round-trip per side
     min_swing_rank: float = 40.0         # minimum rank score to consider
     warmup_days: int = 252               # ~1 year look-back for indicators
+
+    # --- New Sprint 1 Config ---
+    # TSL-001: Regime-aware risk sizing
+    use_regime_risk: bool = True
+    regime_risk_map: dict = field(
+        default_factory=lambda: {
+            "TRENDING_UP": 0.025,
+            "RANGE_BOUND": 0.020,
+            "TRENDING_DOWN": 0.010,
+            "VOLATILE": 0.010,
+        }
+    )
+
+    # TSL-002: Correlation
+    use_correlation_sizing: bool = True
+    correlation_lookback: int = 30
+    max_correlation: float = 0.70
+
+    # TSL-003: Portfolio VaR and Drawdown Circuit Breakers
+    use_var_limit: bool = True
+    use_drawdown_breaker: bool = True
+    max_portfolio_drawdown: float = 0.08
+    max_daily_var_pct: float = 0.03
+
+    # TSL-004: Sector Concentration
+    use_sector_limits: bool = True
+    max_sector_exposure: float = 0.30
+
+    # TSL-005: Realistic Indian Market Costs
+    use_realistic_costs: bool = True
+    stt_pct: float = STT_PCT
+    brokerage_per_order: float = BROKERAGE_PER_ORDER
+    stamp_duty_pct: float = STAMP_DUTY_PCT
+    gst_pct: float = GST_PCT
+
+    # TSL-006: Exit Slippage
+    exit_slippage_pct: float = 0.001
+    sl_slippage_pct: float = 0.002
 
     # Portfolio replacement: only swap when new rank exceeds old by this much
     replacement_threshold: float = 10.0
@@ -122,9 +166,22 @@ class SwingBacktester:
         # Benchmark data for RS computation
         self.benchmark_data: pd.DataFrame | None = None
 
+        # Regime state for the backtest (classifies the broad market, not individual stocks)
+        self._regime_classifier = RegimeClassifier()
+        self._current_regime: str = "RANGE_BOUND"
+
+        # Correlation Engine
+        self._corr_engine = CorrelationEngine(
+            account_value=config.initial_capital,
+            lookback=config.correlation_lookback,
+            max_correlation=config.max_correlation,
+            max_drawdown_pct=config.max_portfolio_drawdown,
+        )
+
         # Output
         self.portfolio_history: list[dict] = []
         self.trade_log: list[dict] = []
+        self.portfolio_history_notes: list[dict] = []
 
     # ----------------------------------------------------------
     # Data loading
@@ -267,6 +324,96 @@ class SwingBacktester:
             return True
         return False
 
+    def _update_regime(self, today: pd.Timestamp) -> str:
+        """Classify the current market regime using NIFTY 50 benchmark data."""
+        if self.benchmark_data is None or self.benchmark_data.empty:
+            return "RANGE_BOUND"
+        bench_slice = self.benchmark_data[self.benchmark_data.index <= today]
+        if len(bench_slice) < 20:
+            return "RANGE_BOUND"
+        return self._regime_classifier.classify(bench_slice)
+
+    def _get_risk_pct(self) -> float:
+        """Return the risk-per-trade percentage for the current regime."""
+        if not self.cfg.use_regime_risk:
+            return self.cfg.risk_per_trade
+        return self.cfg.regime_risk_map.get(self._current_regime, self.cfg.risk_per_trade)
+
+    def _risk_controls_allow_buy(self, today: pd.Timestamp) -> tuple[bool, str]:
+        """Check portfolio-level risk controls before allowing any new BUY today."""
+        if self.cfg.use_drawdown_breaker:
+            breaker_active, dd_pct = self._corr_engine.check_drawdown_circuit_breaker()
+            if breaker_active:
+                return False, f"DRAWDOWN_BREAKER ({dd_pct*100:.1f}% drawdown > {self.cfg.max_portfolio_drawdown*100:.0f}% limit)"
+
+        if self.cfg.use_var_limit and self.positions:
+            position_values = {}
+            for sym, pos in self.positions.items():
+                df_sym = self.data.get(sym)
+                if df_sym is not None and today in df_sym.index:
+                    cmp = float(df_sym.loc[today, "close"])
+                else:
+                    cmp = pos.entry_price
+                position_values[sym] = pos.shares * cmp
+
+            daily_data_for_var = {}
+            for sym in self.positions:
+                df_sym = self.data.get(sym)
+                if df_sym is not None:
+                    daily_data_for_var[sym] = df_sym[df_sym.index <= today]
+
+            var_exceeded, var_pct = self._corr_engine.check_var_limit(
+                daily_data=daily_data_for_var,
+                position_values=position_values,
+            )
+            if var_exceeded:
+                return False, f"VAR_LIMIT ({var_pct*100:.2f}% VaR > {self.cfg.max_daily_var_pct*100:.0f}% limit)"
+
+        return True, ""
+
+    def _sector_allows_buy(self, symbol: str, entry_price: float, shares: int, today: pd.Timestamp) -> tuple[bool, str]:
+        """Check if buying this symbol would breach the sector concentration limit."""
+        if not self.cfg.use_sector_limits:
+            return True, ""
+
+        candidate_sector = SYMBOL_SECTOR.get(symbol, "MISC")
+        total_equity = self._total_equity(today)
+        if total_equity <= 0:
+            return True, ""
+
+        sector_value = 0.0
+        for sym, pos in self.positions.items():
+            if SYMBOL_SECTOR.get(sym, "MISC") == candidate_sector:
+                df_sym = self.data.get(sym)
+                if df_sym is not None and today in df_sym.index:
+                    cmp = float(df_sym.loc[today, "close"])
+                else:
+                    cmp = pos.entry_price
+                sector_value += pos.shares * cmp
+
+        new_position_value = shares * entry_price
+        projected_sector_pct = (sector_value + new_position_value) / total_equity
+
+        if projected_sector_pct > self.cfg.max_sector_exposure:
+            return False, f"SECTOR_LIMIT: {candidate_sector} would reach {projected_sector_pct*100:.1f}% > {self.cfg.max_sector_exposure*100:.0f}% limit"
+
+        return True, ""
+
+    def _compute_trade_cost(self, shares: int, price: float, side: str) -> float:
+        """Compute realistic Indian market transaction cost."""
+        if not self.cfg.use_realistic_costs:
+            return shares * price * self.cfg.transaction_cost_pct
+
+        brokerage = self.cfg.brokerage_per_order
+        gst_on_brokerage = brokerage * self.cfg.gst_pct
+
+        if side == "BUY":
+            stamp_duty = shares * price * self.cfg.stamp_duty_pct
+            return stamp_duty + brokerage + gst_on_brokerage
+        else:
+            stt = shares * price * self.cfg.stt_pct
+            return stt + brokerage + gst_on_brokerage
+
     def _rebalance(self, today: pd.Timestamp):
         """
         On rebalance day:
@@ -276,6 +423,9 @@ class SwingBacktester:
           4. Replace only when the new candidate is meaningfully better
           5. Queue buys for new candidates (execute next day)
         """
+        # ---- Update market regime for this rebalance day ----
+        self._current_regime = self._update_regime(today)
+
         # ---- rank universe (with liquidity filter) ----
         ranked: list[dict] = []
         filtered_count = 0
@@ -506,6 +656,17 @@ class SwingBacktester:
         if not self._pending_buys:
             return
 
+        # NEW: Portfolio-level risk gate — skip all pending buys if controls triggered
+        buys_allowed, block_reason = self._risk_controls_allow_buy(today)
+        if not buys_allowed:
+            self.portfolio_history_notes.append({
+                "date": today,
+                "event": "BUYS_BLOCKED",
+                "reason": block_reason,
+            })
+            self._pending_buys.clear()
+            return
+
         buys_to_process = list(self._pending_buys)
         self._pending_buys.clear()
 
@@ -526,9 +687,6 @@ class SwingBacktester:
             # Apply slippage (buy higher)
             entry_price = open_price * (1 + self.cfg.slippage_pct)
 
-            # Transaction cost
-            cost_per_share = entry_price * self.cfg.transaction_cost_pct
-
             # Structure-aware stop from the setup
             stop_loss = float(candidate["setup"].stop_loss)
             if stop_loss <= 0 or stop_loss >= entry_price:
@@ -541,18 +699,56 @@ class SwingBacktester:
                 account_value=self._total_equity(today),
                 entry_price=entry_price,
                 stop_loss=stop_loss,
-                risk_pct=self.cfg.risk_per_trade,
+                risk_pct=self._get_risk_pct(),
             )
             if shares <= 0:
                 continue
 
-            total_cost = shares * (entry_price + cost_per_share)
-            if total_cost > self.cash:
-                shares = int(self.cash // (entry_price + cost_per_share))
-            if shares <= 0:
+            # NEW: Correlation-based position size adjustment
+            if self.cfg.use_correlation_sizing and self.positions:
+                existing_symbols = list(self.positions.keys())
+                daily_data_for_corr = {}
+                for sym in existing_symbols + [symbol]:
+                    df_sym = self.data.get(sym)
+                    if df_sym is not None:
+                        daily_data_for_corr[sym] = df_sym[df_sym.index <= today]
+
+                adjusted_shares, corr_reason = self._corr_engine.get_position_size_adjustment(
+                    new_symbol=symbol,
+                    existing_symbols=existing_symbols,
+                    daily_data=daily_data_for_corr,
+                    base_shares=shares,
+                )
+                if adjusted_shares != shares:
+                    shares = adjusted_shares
+                    corr_note = corr_reason
+                else:
+                    corr_note = ""
+            else:
+                corr_note = ""
+
+            # NEW: Sector concentration limit
+            sector_ok, sector_reason = self._sector_allows_buy(symbol, entry_price, shares, today)
+            if not sector_ok:
+                self.portfolio_history_notes.append({
+                    "date": today,
+                    "event": "BUY_SKIPPED_SECTOR",
+                    "symbol": symbol,
+                    "reason": sector_reason,
+                })
                 continue
 
-            total_cost = shares * (entry_price + cost_per_share)
+            buy_cost = self._compute_trade_cost(shares, entry_price, "BUY")
+            total_cost = shares * entry_price + buy_cost
+
+            if total_cost > self.cash:
+                affordable = int((self.cash - self.cfg.brokerage_per_order * (1 + self.cfg.gst_pct)) / entry_price)
+                shares = max(0, affordable)
+                if shares <= 0:
+                    continue
+                buy_cost = self._compute_trade_cost(shares, entry_price, "BUY")
+                total_cost = shares * entry_price + buy_cost
+
             self.cash -= total_cost
 
             self.positions[symbol] = _Position(
@@ -579,6 +775,10 @@ class SwingBacktester:
                     "swing_rank": candidate["rank_score"],
                     "cost": round(total_cost, 2),
                     "reason": "SWING_ENTRY",
+                    "regime": self._current_regime,
+                    "risk_pct": self._get_risk_pct(),
+                    "corr_adjustment": corr_note,
+                    "trade_cost": round(buy_cost, 2),
                 }
             )
 
@@ -691,8 +891,16 @@ class SwingBacktester:
             else:
                 exit_price = pos.entry_price  # fallback
 
-        # Transaction cost on exit
-        cost = pos.shares * exit_price * self.cfg.transaction_cost_pct
+        # NEW: Apply exit slippage based on reason
+        if reason == "SL_HIT":
+            exit_price = exit_price * (1 - self.cfg.sl_slippage_pct)
+        else:
+            exit_price = exit_price * (1 - self.cfg.exit_slippage_pct)
+
+        exit_price = round(exit_price, 2)
+
+        # Transaction cost on exit (TSL-005)
+        cost = self._compute_trade_cost(pos.shares, exit_price, "SELL")
         proceeds = pos.shares * exit_price - cost
         self.cash += proceeds
 
@@ -718,6 +926,7 @@ class SwingBacktester:
                 "holding_days": holding_days,
                 "reason": reason,
                 "setup_type": pos.setup_type,
+                "trade_cost": round(cost, 2),
             }
         )
 
@@ -748,6 +957,29 @@ class SwingBacktester:
             else:
                 stock_value += pos.entry_price * pos.shares
         total = self.cash + stock_value
+
+        # --- Feed live equity into the correlation engine so the drawdown  ---
+        # --- circuit breaker tracks the real portfolio peak (TSL-003 fix)   ---
+        self._corr_engine.update_portfolio_value(total)
+
+        # Calculate daily portfolio risk metrics (TSL-003)
+        dd_pct = 0.0
+        var_pct = 0.0
+        if self.positions:
+            position_values = {}
+            daily_data_for_var = {}
+            for sym, pos in self.positions.items():
+                df_sym = self.data.get(sym)
+                if df_sym is not None and today in df_sym.index:
+                    cmp = float(df_sym.loc[today, "close"])
+                    daily_data_for_var[sym] = df_sym[df_sym.index <= today]
+                else:
+                    cmp = pos.entry_price
+                position_values[sym] = pos.shares * cmp
+
+            _, dd_pct = self._corr_engine.check_drawdown_circuit_breaker()
+            _, var_pct = self._corr_engine.check_var_limit(daily_data_for_var, position_values)
+
         self.portfolio_history.append(
             {
                 "date": today,
@@ -755,8 +987,12 @@ class SwingBacktester:
                 "stock_value": round(stock_value, 2),
                 "total_value": round(total, 2),
                 "open_positions": len(self.positions),
+                "regime": self._current_regime,
+                "drawdown_pct": round(dd_pct, 4),
+                "var_pct": round(var_pct, 4),
             }
         )
+
 
     # ----------------------------------------------------------
     # Results

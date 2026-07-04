@@ -292,6 +292,7 @@ class SwingSignalRunner:
         df.columns = [str(c).lower() for c in df.columns]
         if not {"open", "high", "low", "close", "volume"}.issubset(df.columns):
             return None
+        df = df.dropna(subset=["close"]).copy()
         if len(df) < 60:
             return None
         try:
@@ -620,8 +621,8 @@ class SwingSignalRunner:
                     return asdict(obj)
                 return str(obj)
 
-            with open(path, "w") as f:
-                json.dump(asdict(report), f, indent=2, default=str)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(asdict(report), f, indent=2, default=str, ensure_ascii=False)
             print(f"\n  Report saved → {path}")
         except Exception as e:
             print(f"  [Warning] Could not save report: {e}")
@@ -635,7 +636,7 @@ class SwingSignalRunner:
 
         # SELL alerts
         if report.sell_alerts:
-            print(f"\n  🔴 SELL ALERTS ({len(report.sell_alerts)})")
+            print(f"\n  [SELL] SELL ALERTS ({len(report.sell_alerts)})")
             print(f"  {'Symbol':<14} {'Price':>8} {'PnL':>7} {'Urgency':<10} Reason")
             print(f"  {'-'*60}")
             for s in report.sell_alerts:
@@ -647,20 +648,20 @@ class SwingSignalRunner:
 
         # HOLD updates
         if report.hold_updates:
-            print(f"\n  🟡 HOLD UPDATES ({len(report.hold_updates)})")
+            print(f"\n  [HOLD] HOLD UPDATES ({len(report.hold_updates)})")
             print(f"  {'Symbol':<14} {'Price':>8} {'PnL':>7} {'R':>5} "
                   f"{'SL':>8} {'Phase':<12} {'Alert'}")
             print(f"  {'-'*70}")
             for h in report.hold_updates:
                 sign = "+" if h.pnl_pct >= 0 else ""
-                alert_str = f"⚡ {h.alert}" if h.alert else ""
+                alert_str = f">> {h.alert}" if h.alert else ""
                 print(f"  {h.symbol:<14} {h.price:>8.2f} {sign}{h.pnl_pct:>6.1f}% "
                       f"  {h.r_multiple:>+4.1f}R  {h.new_sl:>8.2f}  {h.sl_phase:<12} {alert_str}")
                 print(f"    └─ Targets → T1:{h.t1:.2f}  T2:{h.t2:.2f}  T3:{h.t3:.2f}")
 
         # BUY signals
         if report.buy_signals:
-            print(f"\n  🟢 BUY SIGNALS ({len(report.buy_signals)})")
+            print(f"\n  [BUY] BUY SIGNALS ({len(report.buy_signals)})")
             print(f"  {'Symbol':<14} {'Score':>6} {'Setup':<14} {'Price':>8} "
                   f"{'SL':>8} {'T1':>8} {'T2':>8} {'R:R':>5}")
             print(f"  {'-'*75}")

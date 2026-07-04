@@ -194,6 +194,29 @@ def _classify_swing_tier(swing_rank: float, setup_actionable: bool) -> str:
     return "LOW"
 
 
+def _get_market_regime() -> str:
+    """Consistently determine market regime using NIFTY."""
+    try:
+        from feature_engineering import add_technical_indicators
+        from quant.regime_classifier import classify_regime
+        nifty_df = _cache.get_daily("^NSEI")
+        if nifty_df.empty:
+            nifty_df = DataCache._fetch("^NSEI", period="3mo", interval="1d")
+        if not nifty_df.empty and len(nifty_df) >= 50:
+            nifty_ind = add_technical_indicators(nifty_df.copy())
+            return classify_regime(nifty_ind, "RANGE_BOUND")
+        # fallback
+        for sym in MONITOR_SYMBOLS[:5]:
+            if sym == "^NSEI": continue
+            df = _cache.get_daily(sym)
+            if not df.empty and len(df) >= 50:
+                df_ind = add_technical_indicators(df.copy())
+                return classify_regime(df_ind, "RANGE_BOUND")
+    except Exception:
+        pass
+    return "RANGE_BOUND"
+
+
 # ---------------------------------------------------------------------------
 # App factory
 # ---------------------------------------------------------------------------
@@ -265,7 +288,7 @@ def create_app() -> Flask:
         mkt = get_status()
 
         # Regime from NIFTY
-        regime = "UNKNOWN"
+        regime = _get_market_regime()
         investable = True
         invest_reasons = []
         try:
@@ -274,9 +297,7 @@ def create_app() -> Flask:
                 nifty_df = DataCache._fetch("^NSEI", period="3mo", interval="1d")
             if not nifty_df.empty and len(nifty_df) >= 50:
                 from feature_engineering import add_technical_indicators
-                from quant.regime_classifier import classify_regime
                 nifty_ind = add_technical_indicators(nifty_df.copy())
-                regime = classify_regime(nifty_ind, "RANGE_BOUND")
 
                 last = nifty_ind.iloc[-1]
                 rsi = float(last.get("rsi", 50))
@@ -499,16 +520,7 @@ def create_app() -> Flask:
         from quant.swing_ranker import compute_swing_rank
 
         # Determine regime
-        regime = "RANGE_BOUND"
-        for sym in MONITOR_SYMBOLS[:5]:
-            df = _cache.get_daily(sym)
-            if not df.empty and len(df) >= 50:
-                try:
-                    df_ind = add_technical_indicators(df.copy())
-                    regime = classify_regime(df_ind, regime)
-                except Exception:
-                    pass
-                break
+        regime = _get_market_regime()
 
         weight_table = get_weight_table(regime)
         sector_analyzer = SectorAnalyzer()
@@ -537,6 +549,10 @@ def create_app() -> Flask:
                             break
                 if price == 0:
                     continue
+
+                live_p = _get_live_price(sym)
+                if live_p is not None:
+                    price = live_p
 
                 rsi = _sf(latest.get("rsi", 50), 50)
                 cmf = _sf(latest.get("cmf", 0), 0)
@@ -766,6 +782,11 @@ def create_app() -> Flask:
                         price = p
                         break
 
+            # Override with live market price if possible for absolute accuracy in SL calcs
+            live_p = _get_live_price(symbol)
+            if live_p is not None:
+                price = live_p
+
             rsi = _sf(latest.get("rsi", 50), 50)
             atr = _sf(latest.get("atr", price * 0.02), price * 0.02)
             adx = _sf(latest.get("adx", 0), 0)
@@ -773,7 +794,7 @@ def create_app() -> Flask:
             supertrend_dir = _sf(latest.get("supertrend_direction", 0), 0)
             squeeze = int(_sf(latest.get("squeeze_fire", 0), 0))
 
-            regime = classify_regime(df_ind, "RANGE_BOUND")
+            regime = _get_market_regime()
             wt = get_weight_table(regime)
             score = score_signals(df_ind, wt)
             normalized = normalize_score(score, max_possible=0.8)

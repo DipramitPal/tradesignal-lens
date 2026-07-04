@@ -43,51 +43,6 @@ function switchTab(tab) {
   // Show/hide panels
   document.querySelectorAll('.tab-panel').forEach(panel => {
     panel.classList.toggle('hidden', panel.id !== `panel-${tab}`);
-/* ================================================================
-   TradeSignal Lens — Dashboard JavaScript
-   ================================================================ */
-
-// ---------------------------------------------------------------------------
-// State
-// ---------------------------------------------------------------------------
-let currentTab = 'summary';
-let chartInstance = null;
-let candleSeries = null;
-let volumeSeries = null;
-let sma20Series = null;
-let sma50Series = null;
-let slLine = null;
-let entryLine = null;
-
-// ---------------------------------------------------------------------------
-// Init
-// ---------------------------------------------------------------------------
-document.addEventListener('DOMContentLoaded', () => {
-  loadMarketStatus();
-  loadSummary();
-  loadCacheStatus();
-  setupSearch();
-  // Refresh market status + cache status every 60s
-  setInterval(loadMarketStatus, 60000);
-  setInterval(loadCacheStatus, 60000);
-  // Auto-refresh active tab every 60s
-  setInterval(refreshCurrentTab, 60000);
-});
-
-// ---------------------------------------------------------------------------
-// TAB NAVIGATION
-// ---------------------------------------------------------------------------
-function switchTab(tab) {
-  currentTab = tab;
-
-  // Update nav buttons
-  document.querySelectorAll('.nav-btn').forEach(btn => {
-    btn.classList.toggle('active', btn.dataset.tab === tab);
-  });
-
-  // Show/hide panels
-  document.querySelectorAll('.tab-panel').forEach(panel => {
-    panel.classList.toggle('hidden', panel.id !== `panel-${tab}`);
     if (panel.id === `panel-${tab}`) {
       panel.classList.add('active');
     } else {
@@ -1302,7 +1257,7 @@ async function openStockDrawer(symbol) {
         </div>
         <div class="analysis-item">
           <span class="analysis-label">Stop Loss</span>
-          <span class="analysis-value text-red">₹${analysis.stop_loss}</span>
+          <span class="analysis-value text-red">₹${analysis.stop_loss}${analysis.is_portfolio ? ` <span style="font-size:11px; color:var(--text-muted); margin-left:4px;">(${analysis.portfolio_phase})</span>` : ''}</span>
         </div>
         <div class="analysis-item">
           <span class="analysis-label">Regime</span>
@@ -1674,12 +1629,12 @@ function renderSwingSignals(data) {
       const reasonsHtml = (s.exit_reasons || []).slice(0, 3).map(r => `<div style="font-size:11px; color:var(--text-muted); padding-left:16px;">└─ ${r}</div>`).join('');
       return `<tr onclick="openStockDrawer('${s.symbol}')">
         <td class="sym-cell">${s.symbol.replace('.NS', '')}</td>
-        <td>₹${s.price.toFixed(2)}</td>
-        <td>₹${s.entry_price.toFixed(2)}</td>
+        <td>₹${(s.price || 0).toFixed(2)}</td>
+        <td>₹${(s.entry_price || 0).toFixed(2)}</td>
         <td class="${pnlCls}">${s.pnl_pct >= 0 ? '+' : ''}${s.pnl_pct}%</td>
         <td><span style="padding:3px 8px;border-radius:999px;font-size:11px;font-weight:700;background:${urgencyColor}20;color:${urgencyColor};border:1px solid ${urgencyColor}40;">${s.urgency}</span></td>
         <td>${s.reason}</td>
-        <td>${s.exit_score.toFixed(2)}</td>
+        <td>${(s.exit_score || 0).toFixed(2)}</td>
       </tr><tr><td colspan="7" style="padding:0 0 8px 0;">${reasonsHtml}</td></tr>`;
     }).join('');
 
@@ -1710,12 +1665,12 @@ function renderSwingSignals(data) {
 
       return `<tr onclick="openStockDrawer('${h.symbol}')">
         <td class="sym-cell">${h.symbol.replace('.NS', '')}</td>
-        <td>₹${h.price.toFixed(2)}</td>
+        <td>₹${(h.price || 0).toFixed(2)}</td>
         <td class="${pnlCls}">${h.pnl_pct >= 0 ? '+' : ''}${h.pnl_pct}%</td>
-        <td class="${pnlCls}">${h.r_multiple >= 0 ? '+' : ''}${h.r_multiple.toFixed(1)}R</td>
-        <td>₹${h.new_sl.toFixed(2)}</td>
+        <td class="${pnlCls}">${h.r_multiple >= 0 ? '+' : ''}${(h.r_multiple || 0).toFixed(1)}R</td>
+        <td>₹${(h.new_sl || 0).toFixed(2)}</td>
         <td><span style="font-size:11px;font-weight:700;color:${phaseColor}">${h.sl_phase}</span></td>
-        <td style="font-size:11px;">T1:₹${h.t1.toFixed(0)} ${h.t1_hit ? '✅' : ''} · T2:₹${h.t2.toFixed(0)} ${h.t2_hit ? '✅' : ''}</td>
+        <td style="font-size:11px;">T1:₹${(h.t1 || 0).toFixed(0)} ${h.t1_hit ? '✅' : ''} · T2:₹${(h.t2 || 0).toFixed(0)} ${h.t2_hit ? '✅' : ''}</td>
         <td>${alertHtml}</td>
       </tr>`;
     }).join('');
@@ -1741,13 +1696,13 @@ function renderSwingSignals(data) {
       return `<tr onclick="openStockDrawer('${b.symbol}')">
         <td style="color:var(--text-muted);font-weight:600;">#${idx + 1}</td>
         <td class="sym-cell">${b.symbol.replace('.NS', '')}</td>
-        <td style="font-weight:600;color:var(--cyan);">${b.rank_score.toFixed(1)} <span class="text-muted">${b.rank_bucket}</span></td>
+        <td style="font-weight:600;color:var(--cyan);">${(b.rank_score || 0).toFixed(1)} <span class="text-muted">${b.rank_bucket}</span></td>
         <td>${b.setup_type}</td>
-        <td>₹${b.price.toFixed(2)}</td>
-        <td>₹${b.entry_sl.toFixed(2)}</td>
-        <td>₹${b.t1.toFixed(0)}</td>
-        <td>₹${b.t2.toFixed(0)}</td>
-        <td>${b.rr_ratio.toFixed(1)}x</td>
+        <td>₹${(b.price || 0).toFixed(2)}</td>
+        <td>₹${(b.entry_sl || 0).toFixed(2)}</td>
+        <td>₹${(b.t1 || 0).toFixed(0)}</td>
+        <td>₹${(b.t2 || 0).toFixed(0)}</td>
+        <td>${(b.rr_ratio || 0).toFixed(1)}x</td>
         <td>${b.suggested_shares}</td>
         <td><span class="sector-badge">${b.sector}</span></td>
         <td>

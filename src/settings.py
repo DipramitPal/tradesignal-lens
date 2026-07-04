@@ -121,6 +121,19 @@ GAP_THRESHOLD_PCT = float(os.getenv("GAP_THRESHOLD_PCT", "3.0"))
 MARKET_OPEN_BUFFER_MINUTES = int(os.getenv("MARKET_OPEN_BUFFER_MINUTES", "15"))
 MARKET_CLOSE_BUFFER_MINUTES = int(os.getenv("MARKET_CLOSE_BUFFER_MINUTES", "15"))
 
+# --- Transaction Costs (Indian Market — Zerodha/Discount Broker) ---
+STT_PCT = float(os.getenv("STT_PCT", "0.001"))              # 0.1% on sell-side (delivery)
+BROKERAGE_PER_ORDER = float(os.getenv("BROKERAGE_PER_ORDER", "20"))  # Rs.20 flat per order
+STAMP_DUTY_PCT = float(os.getenv("STAMP_DUTY_PCT", "0.00015"))  # 0.015% on buy-side
+GST_PCT = float(os.getenv("GST_PCT", "0.18"))                # 18% GST on brokerage
+SLIPPAGE_PCT = float(os.getenv("SLIPPAGE_PCT", "0.001"))      # 0.1% estimated slippage
+ROUND_TRIP_COST_PCT = float(os.getenv("ROUND_TRIP_COST_PCT", "0.004"))  # ~0.4% total round-trip
+
+# --- Macro Event Calendar ---
+EVENT_CALENDAR_FILE = str(DATA_DIR / "event_calendar.json")
+MACRO_EVENT_BLOCK_HOURS = int(os.getenv("MACRO_EVENT_BLOCK_HOURS", "24"))
+EARNINGS_BLOCK_DAYS = int(os.getenv("EARNINGS_BLOCK_DAYS", "2"))
+
 # --- NIFTY 200 Scan Universe ---
 # Full NIFTY 200 constituent list (NSE symbols with .NS suffix).
 # Updated quarterly; source: NSE India index composition.

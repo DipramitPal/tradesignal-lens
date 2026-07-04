@@ -50,163 +50,141 @@ WEIGHT_TABLES = {
     },
 }
 
-# Transition smoothing state (module-level for persistence across calls)
-_transition_state = {
-    "candidate_regime": None,
-    "candidate_count": 0,
-    "confirmed_regime": "RANGE_BOUND",
-    "previous_regime": "RANGE_BOUND",
-    "in_transition": False,
-}
-
 TRANSITION_CONFIRMATION_CANDLES = 3
 
 
-def classify_regime(df_daily: pd.DataFrame, prev_regime: str = "RANGE_BOUND") -> str:
-    """
-    Classify the current market regime based on daily indicators.
+class RegimeClassifier:
+    """Stateful regime classifier. Use one instance per instrument."""
 
-    Uses 3-candle confirmation before committing to a new regime.
+    def __init__(self, initial_regime: str = "RANGE_BOUND"):
+        self._state = {
+            "candidate_regime": None,
+            "candidate_count": 0,
+            "confirmed_regime": initial_regime,
+            "previous_regime": initial_regime,
+            "in_transition": False,
+        }
 
-    Args:
-        df_daily: daily DataFrame with indicators (adx, bb_width, ema_50,
-                  ema_200, supertrend_direction, atr)
-        prev_regime: fallback if in a transition zone
+    def classify(self, df_daily: pd.DataFrame) -> str:
+        """Classify regime from daily DataFrame. Same logic as module-level classify_regime()."""
+        if df_daily.empty or len(df_daily) < 20:
+            return self._state["confirmed_regime"]
+        
+        raw_regime = self._detect_raw_regime(df_daily)
+        return self._apply_transition_smoothing(raw_regime)
 
-    Returns:
-        One of: TRENDING_UP, TRENDING_DOWN, RANGE_BOUND, VOLATILE
-    """
-    if df_daily.empty or len(df_daily) < 20:
-        return prev_regime
+    def _detect_raw_regime(self, df_daily: pd.DataFrame) -> str:
+        """Detect raw regime without smoothing."""
+        latest = df_daily.iloc[-1]
 
-    latest = df_daily.iloc[-1]
+        adx = float(latest.get("adx", 0))
+        ema50 = float(latest.get("ema_50", 0))
+        ema200 = float(latest.get("ema_200", 0))
+        supertrend_dir = float(latest.get("supertrend_direction", 0))
 
-    adx = float(latest.get("adx", 0))
-    ema50 = float(latest.get("ema_50", 0))
-    ema200 = float(latest.get("ema_200", 0))
-    supertrend_dir = float(latest.get("supertrend_direction", 0))
+        # BB width analysis
+        bb_width = float(latest.get("bb_width", 0))
+        bb_width_series = df_daily["bb_width"] if "bb_width" in df_daily.columns else None
+        bb_width_median = float(bb_width_series.rolling(50).median().iloc[-1]) if (
+            bb_width_series is not None and len(bb_width_series) >= 50
+        ) else bb_width
 
-    # BB width analysis
-    bb_width = float(latest.get("bb_width", 0))
-    bb_width_series = df_daily["bb_width"] if "bb_width" in df_daily.columns else None
-    bb_width_median = float(bb_width_series.rolling(50).median().iloc[-1]) if (
-        bb_width_series is not None and len(bb_width_series) >= 50
-    ) else bb_width
+        # ATR spike detection
+        atr_current = float(latest.get("atr", 0))
+        if "atr" in df_daily.columns and len(df_daily) >= 20:
+            atr_avg = float(df_daily["atr"].rolling(20).mean().iloc[-1])
+            atr_ratio = atr_current / (atr_avg + 1e-10)
+        else:
+            atr_ratio = 1.0
 
-    # ATR spike detection
-    atr_current = float(latest.get("atr", 0))
-    if "atr" in df_daily.columns and len(df_daily) >= 20:
-        atr_avg = float(df_daily["atr"].rolling(20).mean().iloc[-1])
-        atr_ratio = atr_current / (atr_avg + 1e-10)
-    else:
-        atr_ratio = 1.0
+        # --- Raw regime detection ---
+        raw_regime = self._state["confirmed_regime"]
 
-    # --- Raw regime detection ---
-    raw_regime = prev_regime
+        # Volatile (check first — overrides)
+        if atr_ratio > 1.5 or (bb_width_median > 0 and bb_width > 2 * bb_width_median):
+            raw_regime = "VOLATILE"
+        # Trending UP
+        elif adx > 25 and ema50 > ema200 and supertrend_dir == 1:
+            raw_regime = "TRENDING_UP"
+        # Trending DOWN
+        elif adx > 25 and ema50 < ema200 and supertrend_dir == -1:
+            raw_regime = "TRENDING_DOWN"
+        # Range-bound
+        elif adx < 20 and (bb_width_median == 0 or bb_width < bb_width_median):
+            raw_regime = "RANGE_BOUND"
+        # Transition zone
+        elif adx > 20 and ema50 > ema200:
+            raw_regime = "TRENDING_UP"
+        elif adx > 20 and ema50 < ema200:
+            raw_regime = "TRENDING_DOWN"
 
-    # Volatile (check first — overrides)
-    if atr_ratio > 1.5 or (bb_width_median > 0 and bb_width > 2 * bb_width_median):
-        raw_regime = "VOLATILE"
-    # Trending UP
-    elif adx > 25 and ema50 > ema200 and supertrend_dir == 1:
-        raw_regime = "TRENDING_UP"
-    # Trending DOWN
-    elif adx > 25 and ema50 < ema200 and supertrend_dir == -1:
-        raw_regime = "TRENDING_DOWN"
-    # Range-bound
-    elif adx < 20 and (bb_width_median == 0 or bb_width < bb_width_median):
-        raw_regime = "RANGE_BOUND"
-    # Transition zone
-    elif adx > 20 and ema50 > ema200:
-        raw_regime = "TRENDING_UP"
-    elif adx > 20 and ema50 < ema200:
-        raw_regime = "TRENDING_DOWN"
-
-    # --- Transition smoothing ---
-    return _apply_transition_smoothing(raw_regime)
-
-
-def _apply_transition_smoothing(raw_regime: str) -> str:
-    """
-    Apply 3-candle confirmation before switching regimes.
-
-    Returns the confirmed regime (may lag the raw detection).
-    """
-    global _transition_state
-
-    current_confirmed = _transition_state["confirmed_regime"]
-
-    if raw_regime == current_confirmed:
-        # No change — reset any pending transition
-        _transition_state["candidate_regime"] = None
-        _transition_state["candidate_count"] = 0
-        _transition_state["in_transition"] = False
-        return current_confirmed
-
-    # New candidate or continuation of existing candidate
-    if raw_regime == _transition_state["candidate_regime"]:
-        _transition_state["candidate_count"] += 1
-    else:
-        _transition_state["candidate_regime"] = raw_regime
-        _transition_state["candidate_count"] = 1
-        _transition_state["in_transition"] = True
-
-    # Check if confirmation threshold reached
-    if _transition_state["candidate_count"] >= TRANSITION_CONFIRMATION_CANDLES:
-        _transition_state["previous_regime"] = current_confirmed
-        _transition_state["confirmed_regime"] = raw_regime
-        _transition_state["candidate_regime"] = None
-        _transition_state["candidate_count"] = 0
-        _transition_state["in_transition"] = False
         return raw_regime
 
-    # Still in transition — return confirmed (old) regime
-    return current_confirmed
+    def _apply_transition_smoothing(self, raw_regime: str) -> str:
+        """Apply 3-candle confirmation before switching regimes."""
+        current_confirmed = self._state["confirmed_regime"]
 
+        if raw_regime == current_confirmed:
+            # No change — reset any pending transition
+            self._state["candidate_regime"] = None
+            self._state["candidate_count"] = 0
+            self._state["in_transition"] = False
+            return current_confirmed
 
-def is_in_transition() -> bool:
-    """Check if the regime classifier is currently in a transition window."""
-    return _transition_state["in_transition"]
+        # New candidate or continuation of existing candidate
+        if raw_regime == self._state["candidate_regime"]:
+            self._state["candidate_count"] += 1
+        else:
+            self._state["candidate_regime"] = raw_regime
+            self._state["candidate_count"] = 1
+            self._state["in_transition"] = True
 
+        # Check if confirmation threshold reached
+        if self._state["candidate_count"] >= TRANSITION_CONFIRMATION_CANDLES:
+            self._state["previous_regime"] = current_confirmed
+            self._state["confirmed_regime"] = raw_regime
+            self._state["candidate_regime"] = None
+            self._state["candidate_count"] = 0
+            self._state["in_transition"] = False
+            return raw_regime
 
-def get_transition_info() -> dict:
-    """Get current transition state for diagnostics."""
-    return {
-        "confirmed": _transition_state["confirmed_regime"],
-        "candidate": _transition_state["candidate_regime"],
-        "candidate_count": _transition_state["candidate_count"],
-        "in_transition": _transition_state["in_transition"],
-        "previous": _transition_state["previous_regime"],
-    }
+        # Still in transition — return confirmed (old) regime
+        return current_confirmed
 
+    def is_in_transition(self) -> bool:
+        """Check if the regime classifier is currently in a transition window."""
+        return self._state["in_transition"]
 
-def get_weight_table(regime: str) -> dict[str, float]:
-    """
-    Return the signal weight table for the given regime.
+    def get_transition_info(self) -> dict:
+        """Get current transition state for diagnostics."""
+        return dict(self._state)
 
-    If in a transition window, blends 50/50 between old and candidate regime.
-    """
-    if _transition_state["in_transition"] and _transition_state["candidate_regime"]:
-        return get_blended_weight_table(
-            regime, _transition_state["candidate_regime"], blend_ratio=0.5
-        )
-    return WEIGHT_TABLES.get(regime, WEIGHT_TABLES["RANGE_BOUND"])
+    def reset(self):
+        """Reset transition state."""
+        self._state = {
+            "candidate_regime": None,
+            "candidate_count": 0,
+            "confirmed_regime": "RANGE_BOUND",
+            "previous_regime": "RANGE_BOUND",
+            "in_transition": False,
+        }
+
+    def get_weight_table(self, regime: str) -> dict[str, float]:
+        """
+        Return the signal weight table for the given regime.
+        If in a transition window, blends 50/50 between old and candidate regime.
+        """
+        if self._state["in_transition"] and self._state["candidate_regime"]:
+            return get_blended_weight_table(
+                regime, self._state["candidate_regime"], blend_ratio=0.5
+            )
+        return WEIGHT_TABLES.get(regime, WEIGHT_TABLES["RANGE_BOUND"])
 
 
 def get_blended_weight_table(
     regime_a: str, regime_b: str, blend_ratio: float = 0.5
 ) -> dict[str, float]:
-    """
-    Blend two regime weight tables.
-
-    Args:
-        regime_a: first regime
-        regime_b: second regime
-        blend_ratio: weight for regime_b (0 = pure A, 1 = pure B)
-
-    Returns:
-        Blended weight table
-    """
+    """Blend two regime weight tables."""
     table_a = WEIGHT_TABLES.get(regime_a, WEIGHT_TABLES["RANGE_BOUND"])
     table_b = WEIGHT_TABLES.get(regime_b, WEIGHT_TABLES["RANGE_BOUND"])
 
@@ -220,13 +198,23 @@ def get_blended_weight_table(
     return blended
 
 
+# Module-level singleton for backward compatibility with existing callers
+_default_classifier = RegimeClassifier()
+
+def classify_regime(df_daily: pd.DataFrame, prev_regime: str = "RANGE_BOUND") -> str:
+    """Backward-compatible wrapper. Uses module singleton."""
+    return _default_classifier.classify(df_daily)
+
 def reset_transition_state():
-    """Reset transition state (useful for testing)."""
-    global _transition_state
-    _transition_state = {
-        "candidate_regime": None,
-        "candidate_count": 0,
-        "confirmed_regime": "RANGE_BOUND",
-        "previous_regime": "RANGE_BOUND",
-        "in_transition": False,
-    }
+    """Reset default singleton (for tests)."""
+    _default_classifier.reset()
+
+def is_in_transition() -> bool:
+    return _default_classifier.is_in_transition()
+
+def get_transition_info() -> dict:
+    return _default_classifier.get_transition_info()
+
+def get_weight_table(regime: str) -> dict[str, float]:
+    return _default_classifier.get_weight_table(regime)
+
